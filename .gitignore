@@ -1,0 +1,20 @@
+# Python build
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual env
+.venv/
+env/
+venv/
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model nặng (không đẩy lên GitHub)
+artifacts/
