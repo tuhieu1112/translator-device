@@ -1,0 +1,4 @@
+DISPLAY_MODE: "debug"
+BUTTON_MODE: "debug"
+POWER_MODE: "debug"
+ARTIFACTS_DIR: "artifacts"
