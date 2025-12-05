@@ -1,4 +1,37 @@
-DISPLAY_MODE: "debug"
-BUTTON_MODE: "debug"
-POWER_MODE: "debug"
+# ===== Chế độ backend =====
+DISPLAY_MODE: "debug"   # "debug" (in ra terminal) hoặc "oled" (OLED thật trên Pi)
+BUTTON_MODE: "debug"    # "debug" hoặc "gpio"
+POWER_MODE: "debug"     # "debug" hoặc "pi"
+AUDIO_MODE: "debug"     # "debug" hoặc "pi"
+
+# ===== Thư mục chứa model =====
 ARTIFACTS_DIR: "artifacts"
+
+# STT (để sau dùng, giờ tạm placeholder)
+STT_VI:
+  MODEL: "artifacts/stt_vi/model.onnx"
+
+STT_EN:
+  MODEL: "artifacts/stt_en/model.onnx"
+
+# TTS (để sau dùng, giờ tạm placeholder)
+TTS_VI:
+  MODEL: "artifacts/tts_vi"
+
+TTS_EN:
+  MODEL: "artifacts/tts_en"
+
+# ===== 3 mô hình dịch =====
+NMT:
+  VI_EN:
+    MODEL_DIR: "artifacts/nmt_vi_en"    # model vi-en bạn train/copy vào đây
+  EN_VI:
+    MODEL_DIR: "artifacts/nmt_en_vi"    # model en-vi
+  EN_EN:
+    MODEL_DIR: "artifacts/nmt_en_en"    # model en-en grammar
+
+# ===== Cấu hình nút =====
+BUTTONS:
+  TALK_PIN: 17           # GPIO nút 1: giữ để thu âm
+  MODE_PIN: 27           # GPIO nút 2: đổi mode / shutdown
+  LONG_PRESS_SEC: 5.0    # giữ 5s để tắt máy

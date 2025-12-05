@@ -1,9 +1,15 @@
+# device_app/main.py
+
 from device_app.utils.config import load_config
 from device_app.hardware.display import create_display
 from device_app.hardware.buttons import create_buttons
 from device_app.hardware.power import create_power
 from device_app.hardware.audio import create_audio
 from device_app.core.pipeline import TranslatorPipeline
+
+
+# 3 chế độ xoay vòng bằng nút MODE
+MODES = ["VI→EN", "EN→VI", "EN→EN"]
 
 
 def main():
@@ -16,20 +22,37 @@ def main():
 
     pipeline = TranslatorPipeline(config, display, buttons, audio, power)
 
-    current_mode = "VI→EN"  # mặc định
+    current_index = 0
+    current_mode = MODES[current_index]
+
+    # Hiển thị trạng thái ban đầu
+    display.clear()
+    display.show_status(
+        f"Mode: {current_mode}", "Ready", battery=power.get_battery_percent()
+    )
 
     while True:
-        # Kiểm tra đổi mode / shutdown (bản debug hiện chưa làm gì)
+        # 1) Kiểm tra nút MODE / SHUTDOWN
         event = buttons.check_mode_or_shutdown()
         if event.toggle_mode:
-            current_mode = "EN→VI" if current_mode == "VI→EN" else "VI→EN"
+            current_index = (current_index + 1) % len(MODES)
+            current_mode = MODES[current_index]
+            display.show_status(
+                f"Mode: {current_mode}",
+                "Ready",
+                battery=power.get_battery_percent(),
+            )
 
         if event.shutdown:
-            display.show_status("Shutting down...", "", battery=power.get_battery_percent())
+            display.show_status(
+                "Shutting down...",
+                "",
+                battery=power.get_battery_percent(),
+            )
             power.request_shutdown()
             break
 
-        # Chạy 1 lượt phiên dịch
+        # 2) Chạy 1 lượt phiên dịch theo mode hiện tại
         pipeline.run_once(current_mode)
 
 
