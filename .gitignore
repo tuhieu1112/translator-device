@@ -1,37 +1,63 @@
+# ===============================
 # Python
+# ===============================
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 *.log
 
+# ===============================
 # Virtualenv
+# ===============================
 venv/
 translator-env/
 
+# ===============================
 # OS
+# ===============================
 .DS_Store
 Thumbs.db
 
-# Artifacts / models (KHÔNG PUSH)
+# ===============================
+# Artifacts / trained models (KHÔNG PUSH)
+# ===============================
 artifacts/
-models/
+artifacts/models/
+artifacts/**/models/
 *.onnx
 *.pt
 *.bin
 
+# ===============================
 # Audio debug
+# ===============================
 artifacts/debug_audio/
 *.wav
 
-# Editor
+# ===============================
+# Editor / IDE
+# ===============================
 .vscode/
 .idea/
 
+# ===============================
 # Cache
+# ===============================
 .cache/
+.huggingface/
+hf_cache/
 
-# stray files
+# ===============================
+# Build / tmp
+# ===============================
+tmp/
+build/
+dist/
+
+# ===============================
+# Stray / accidental files
+# ===============================
 NoReturn
 TupleStr
 str
