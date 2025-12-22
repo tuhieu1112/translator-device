@@ -1,4 +1,8 @@
 pyyaml
+numpy
+sounddevice
+soundfile
+onnxruntime
+torch
 transformers
 sentencepiece
-torch

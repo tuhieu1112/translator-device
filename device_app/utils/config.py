@@ -1,7 +1,11 @@
+# device_app/utils/config.py
 from pathlib import Path
+from typing import Any, Dict
+
 import yaml
 
-def load_config(path: str | Path):
+
+def load_config(path: str | Path) -> Dict[str, Any]:
     """Đọc file YAML cấu hình."""
     path = Path(path)
     with open(path, "r", encoding="utf-8") as f:

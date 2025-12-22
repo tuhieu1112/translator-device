@@ -1,37 +1,48 @@
-# ===== Chế độ backend =====
-DISPLAY_MODE: "debug"   # "debug" (in ra terminal) hoặc "oled" (OLED thật trên Pi)
-BUTTON_MODE: "debug"    # "debug" hoặc "gpio"
-POWER_MODE: "debug"     # "debug" hoặc "pi"
-AUDIO_MODE: "debug"     # "debug" hoặc "pi"
+# ==== Backend mode ====
+DISPLAY_MODE: "debug"   # "debug" hoặc "oled"
+BUTTON_MODE:  "debug"   # laptop: debug | pi: gpio
+AUDIO_MODE:   "debug"   # tùy backend audio bạn dùng
+POWER_MODE:   "debug"   # laptop: debug | pi: pi
 
-# ===== Thư mục chứa model =====
 ARTIFACTS_DIR: "artifacts"
 
-# STT (để sau dùng, giờ tạm placeholder)
+# ===== STT (onnx CTC) =====
 STT_VI:
-  MODEL: "artifacts/stt_vi/model.onnx"
+  MODEL_PATH: "artifacts/stt_vi/stt_vi_v3.onnx"
+  PROCESSOR_DIR: "artifacts/stt_vi/processor"
 
 STT_EN:
-  MODEL: "artifacts/stt_en/model.onnx"
+  MODEL_PATH: "artifacts/stt_en/stt_en_v1.onnx"
+  PROCESSOR_DIR: "artifacts/stt_en/processor"
 
-# TTS (để sau dùng, giờ tạm placeholder)
-TTS_VI:
-  MODEL: "artifacts/tts_vi"
-
-TTS_EN:
-  MODEL: "artifacts/tts_en"
-
-# ===== 3 mô hình dịch =====
+# ===== NMT =====
 NMT:
   VI_EN:
-    MODEL_DIR: "artifacts/nmt_vi_en"    # model vi-en bạn train/copy vào đây
+    MODEL_DIR: "artifacts/nmt_vi_en"
   EN_VI:
-    MODEL_DIR: "artifacts/nmt_en_vi"    # model en-vi
+    MODEL_DIR: "artifacts/nmt_en_vi"
   EN_EN:
-    MODEL_DIR: "artifacts/nmt_en_en"    # model en-en grammar
+    MODEL_DIR: "artifacts/nmt_en_en"
 
-# ===== Cấu hình nút =====
+# ===== TTS =====
+TTS:
+  EN:
+    BACKEND: "piper"
+    PIPER_EXE: "piper"     # Windows: "piper.exe" hoặc path đầy đủ
+    VOICE: "artifacts/tts_en/en_US-ljspeech-high.onnx"
+
+  VI:
+    BACKEND: "piper"
+    PIPER_EXE: "piper"     # Windows: "piper.exe" hoặc path đầy đủ
+    VOICE: "artifacts/tts_vi/vi_VN-vais1000-medium.onnx"
+
+# ===== Audio =====
+AUDIO:
+  SAMPLE_RATE: 16000
+  CHANNELS: 1
+  MAX_RECORD_SECONDS: 7
+
+# ===== Buttons (Pi) =====
 BUTTONS:
-  TALK_PIN: 17           # GPIO nút 1: giữ để thu âm
-  MODE_PIN: 27           # GPIO nút 2: đổi mode / shutdown
-  LONG_PRESS_SEC: 5.0    # giữ 5s để tắt máy
+  TALK_PIN: 23
+  MODE_PIN: 24

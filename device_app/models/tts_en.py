@@ -1,17 +1,14 @@
 # device_app/models/tts_en.py
+from __future__ import annotations
 
-from pathlib import Path
+from typing import Any, Mapping
+
+from device_app.models.tts_base import TTSBase
 
 
-class TTSEn:
-    """
-    Stub TTS tiếng Anh.
-    """
+class TTSEn(TTSBase):
+    """TTS tiếng Anh dùng Piper."""
 
-    def __init__(self, config):
-        self.config = config
-        print("[TTS EN] Using STUB backend (no real speech).")
-
-    def synthesize(self, text_en: str) -> str:
-        print(f"[TTS DEBUG EN] Giả lập tạo WAV từ text: {text_en}")
-        return str(Path("tts_output_en.wav"))
+    def __init__(self, config: Mapping[str, Any]) -> None:
+        # key "EN" trong config["TTS"]
+        super().__init__(config=config, tts_key="EN", lang="en")

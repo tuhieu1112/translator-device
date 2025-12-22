@@ -1,63 +1,59 @@
 # device_app/hardware/display.py
+from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import Optional
-
-
-class BaseDisplay(ABC):
-    """Interface chung cho màn hình hiển thị."""
-
-    @abstractmethod
-    def show_status(self, line1: str, line2: str = "", battery: Optional[int] = None):
-        """Hiển thị 2 dòng trạng thái + (tuỳ chọn) % pin."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def clear(self):
-        raise NotImplementedError
+from dataclasses import dataclass
+from typing import Any
 
 
-class DebugDisplay(BaseDisplay):
+@dataclass
+class Display:
     """
-    Dùng khi chạy trên PC / VS Code:
-    chỉ in ra terminal để demo nội dung OLED.
+    Không hiển thị pin nữa.
+
+    show_status vẫn nhận battery để tương thích với pipeline cũ,
+    nhưng sẽ ignore battery.
     """
 
-    def show_status(self, line1: str, line2: str = "", battery: Optional[int] = None):
-        parts = [f"[OLED DEBUG] {line1}"]
-        if line2:
-            parts.append(f" | {line2}")
-        if battery is not None:
-            parts.append(f" | Battery: {battery}%")
-        print("".join(parts))
+    mode: str = "debug"
 
-    def clear(self):
-        print("[OLED DEBUG] clear")
+    def __init__(self, config: dict[str, Any]) -> None:
+        self.mode = str(config.get("DISPLAY_MODE", "debug")).lower()
+
+    def _print_debug(self, text: str) -> None:
+        print(f"[OLED DEBUG] {text}")
+
+    def show_status(
+        self,
+        text: str = "",
+        battery: int | float = 100,  # nhận nhưng ignore
+        mode: Any | None = None,
+        state: str | None = None,
+        **kwargs,
+    ) -> None:
+        parts: list[str] = []
+
+        if mode is not None:
+            mode_name = getattr(mode, "name", str(mode))
+            parts.append(f"Mode={mode_name}")
+
+        if state is not None:
+            parts.append(f"State={state}")
+
+        if text:
+            parts.append(text)
+
+        line = " | ".join(parts) if parts else text
+
+        if self.mode == "debug":
+            self._print_debug(line)
+        else:
+            # TODO: OLED thật (SSD1306) sau
+            self._print_debug(line)
+
+    def show_mode(self, mode: Any, battery: int | float = 100) -> None:
+        mode_name = getattr(mode, "name", str(mode))
+        self.show_status(text=f"Mode={mode_name}", mode=mode, state="IDLE")
 
 
-class OledDisplay(BaseDisplay):
-    """
-    Dùng trên Raspberry Pi, nối với OLED thật (I2C).
-    Hiện tại để TODO, sau này bạn thêm code thư viện OLED vào.
-    """
-
-    def __init__(self, config):
-        self.config = config
-        # TODO: khởi tạo thư viện OLED, ví dụ luma.oled hoặc adafruit_ssd1306
-        # self.device = ...
-
-    def show_status(self, line1: str, line2: str = "", battery: Optional[int] = None):
-        # TODO: vẽ 2 dòng + mức pin lên OLED thật
-        # ví dụ: clear → vẽ text
-        pass
-
-    def clear(self):
-        # TODO: clear màn hình
-        pass
-
-
-def create_display(config) -> BaseDisplay:
-    mode = config.get("DISPLAY_MODE", "debug")
-    if mode == "oled":
-        return OledDisplay(config)
-    return DebugDisplay()
+def create_display(config: dict[str, Any]) -> Display:
+    return Display(config)

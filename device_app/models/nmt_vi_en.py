@@ -1,14 +1,16 @@
-# device_app/models/nmt_vi_en.py
+from dataclasses import dataclass, field
+from typing import Any
+from device_app.models.nmt_base import NMTBase
 
+
+@dataclass
 class NMTViEn:
-    """Stub NMT VI→EN: tạm thời không dùng mô hình thật."""
+    config: Any
+    _impl: NMTBase = field(init=False)
 
-    def __init__(self, config):
-        print("[NMT VI→EN] Using STUB model (real model is disabled).")
-        self.config = config
+    def __post_init__(self) -> None:
+        # OPUS-MT / Marian: VI -> EN (hướng đã cố định trong model)
+        self._impl = NMTBase(model_dir="artifacts/nmt_vi_en")
 
-    def translate(self, text_vi: str) -> str:
-        if not text_vi.strip():
-            return ""
-        # chỉ để nhìn luồng chạy
-        return "[EN_STUB] " + text_vi
+    def translate(self, text: str) -> str:
+        return self._impl.translate(text)

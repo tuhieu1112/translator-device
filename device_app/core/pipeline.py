@@ -1,105 +1,162 @@
-# device_app/core/pipeline.py
+from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Any
 
-from device_app.hardware.buttons import BaseButtons
-from device_app.hardware.display import BaseDisplay
-from device_app.hardware.audio import BaseAudio
-from device_app.hardware.power import BasePower
-
-from device_app.models.stt_vi import STTVi
+from device_app.core.modes import Mode
 from device_app.models.stt_en import STTEn
-from device_app.models.nmt_vi_en import NMTViEn
+from device_app.models.stt_vi import STTVi
 from device_app.models.nmt_en_vi import NMTEnVi
-from device_app.models.grammar_en import GrammarEn
+from device_app.models.nmt_vi_en import NMTViEn
 from device_app.models.tts_en import TTSEn
 from device_app.models.tts_vi import TTSVi
 
+# NLP (KHÔNG sửa câu)
+from device_app.models.nlp.nlp_processor import NLPProcessorV2
 
+# Skeleton slot-based (GIẢI PHÁP CUỐI)
+from device_app.models.nlp.skeleton_translation import SkeletonTranslator
+
+
+@dataclass
 class TranslatorPipeline:
     """
-    - Chờ TALK
-    - Ghi âm (audio)
-    - STT -> (NMT / Grammar) -> TTS
-    - Hiển thị trạng thái trên OLED
+    PIPELINE FINAL – SKELETON SLOT-BASED
+
+    - OPUS chỉ dịch skeleton
+    - Proper nouns bị loại khỏi input dịch
+    - Ghép lại đúng vị trí bằng slot [PNx]
+    - Không entity, không map, không token giả
     """
 
-    def __init__(
-        self,
-        config,
-        display: BaseDisplay,
-        buttons: BaseButtons,
-        audio: BaseAudio,
-        power: BasePower,
-    ):
-        self.config = config
-        self.display = display
-        self.buttons = buttons
-        self.audio = audio
-        self.power = power
+    config: Any
+    display: Any
+    buttons: Any
+    audio: Any
+    power: Any
 
-        # STT (hiện còn là stub, sau thay bằng model thật)
-        self.stt_vi = STTVi(config)
-        self.stt_en = STTEn(config)
+    stt_en: STTEn = field(init=False)
+    stt_vi: STTVi = field(init=False)
+    nmt_en_vi: NMTEnVi = field(init=False)
+    nmt_vi_en: NMTViEn = field(init=False)
+    tts_en: TTSEn = field(init=False)
+    tts_vi: TTSVi = field(init=False)
 
-        # 3 mô hình dịch
-        self.nmt_vi_en = NMTViEn(config)
-        self.nmt_en_vi = NMTEnVi(config)
-        self.grammar_en = GrammarEn(config)
+    nlp_en: NLPProcessorV2 = field(init=False)
+    nlp_vi: NLPProcessorV2 = field(init=False)
 
-        # TTS stub (sau thay bằng model thật)
-        self.tts_en = TTSEn(config)
-        self.tts_vi = TTSVi(config)
+    skeleton: SkeletonTranslator = field(init=False)
 
-    def run_once(self, mode: str):
-        """
-        mode:
-          - "VI→EN"
-          - "EN→VI"
-          - "EN→EN"
-        """
-        battery = self.power.get_battery_percent()
-        self.display.show_status(f"Mode: {mode}", "Ready", battery=battery)
+    # ---------------- INIT ----------------
 
-        # 1) Chờ TALK
-        self.buttons.wait_talk_cycle()
-        self.display.show_status(f"Mode: {mode}", "Recording...", battery=battery)
+    def __post_init__(self):
+        print("[PIPELINE] Initializing models...")
 
-        # 2) Ghi âm
-        wav_in = self.audio.record_once(mode)
-        self.display.show_status(f"Mode: {mode}", "Transcribing...", battery=battery)
+        # STT
+        self.stt_en = STTEn(self.config)
+        self.stt_vi = STTVi(self.config)
 
-        # 3) STT + Dịch / Grammar + TTS
-        if mode == "VI→EN":
-            text_vi = self.stt_vi.transcribe(str(wav_in))
-            text_en = self.nmt_vi_en.translate(text_vi)
+        # NMT (OPUS)
+        self.nmt_en_vi = NMTEnVi(self.config)
+        self.nmt_vi_en = NMTViEn(self.config)
 
+        # TTS
+        self.tts_en = TTSEn(self.config)
+        self.tts_vi = TTSVi(self.config)
+
+        # NLP (chỉ fallback nếu STT rỗng)
+        self.nlp_en = NLPProcessorV2(lang="en")
+        self.nlp_vi = NLPProcessorV2(lang="vi")
+
+        # Skeleton translator
+        self.skeleton = SkeletonTranslator()
+
+        print("[PIPELINE] Ready.")
+
+    # ---------------- helpers ----------------
+
+    def _display(self, mode: Mode, state: str):
+        try:
             self.display.show_status(
-                "VI: " + text_vi[:12], "EN: " + text_en[:12], battery=battery
+                text="",
+                mode=mode,
+                state=state,
+                battery=100,
             )
-            wav_out = self.tts_en.synthesize(text_en)
+        except Exception:
+            pass
 
-        elif mode == "EN→VI":
-            text_en = self.stt_en.transcribe(str(wav_in))
-            text_vi = self.nmt_en_vi.translate(text_en)
+    # ---------------- EN → VI ----------------
 
-            self.display.show_status(
-                "EN: " + text_en[:12], "VI: " + text_vi[:12], battery=battery
-            )
-            wav_out = self.tts_vi.synthesize(text_vi)
+    def _run_en_vi(self):
+        mode = Mode.EN_VI
+        self._display(mode, "RECORDING")
 
-        else:  # "EN→EN" grammar
-            text_en_raw = self.stt_en.transcribe(str(wav_in))
-            text_en_fixed = self.grammar_en.correct(text_en_raw)
+        wav = self.audio.record()
+        raw = (self.stt_en.transcribe_file(wav) or "").strip()
+        print("[STT EN]:", raw)
 
-            self.display.show_status(
-                "EN in: " + text_en_raw[:10],
-                "EN out: " + text_en_fixed[:10],
-                battery=battery,
-            )
-            wav_out = self.tts_en.synthesize(text_en_fixed)
+        result = self.nlp_en.process(raw)
+        print("[NLP EN]:", result)
 
-        # 4) Phát âm thanh
-        self.display.show_status(f"Mode: {mode}", "Playing...", battery=battery)
-        self.audio.play(wav_out)
+        if not result["text"]:
+            self.tts_en.speak(result["fallback"])
+            return
 
-        # 5) Sẵn sàng cho lượt tiếp theo
-        self.display.show_status(f"Mode: {mode}", "Ready", battery=battery)
+        self._display(mode, "TRANSLATING")
+
+        # ---- SKELETON EXTRACT (EN) ----
+        skeleton_text, slots = self.skeleton.extract_en(result["text"])
+        print("[SKELETON EN]:", skeleton_text)
+        print("[SLOTS]:", slots)
+
+        # ---- OPUS TRANSLATE ----
+        vi_raw = self.nmt_en_vi.translate(skeleton_text)
+        print("[NMT EN→VI RAW]:", vi_raw)
+
+        # ---- COMPOSE ----
+        vi = self.skeleton.compose(vi_raw, slots)
+        print("[COMPOSED]:", vi)
+
+        self.tts_vi.speak(vi)
+
+    # ---------------- VI → EN ----------------
+
+    def _run_vi_en(self):
+        mode = Mode.VI_EN
+        self._display(mode, "RECORDING")
+
+        wav = self.audio.record()
+        raw = (self.stt_vi.transcribe_file(wav) or "").strip()
+        print("[STT VI]:", raw)
+
+        result = self.nlp_vi.process(raw)
+        print("[NLP VI]:", result)
+
+        if not result["text"]:
+            self.tts_vi.speak(result["fallback"])
+            return
+
+        self._display(mode, "TRANSLATING")
+
+        # ---- SKELETON EXTRACT (VI) ----
+        skeleton_text, slots = self.skeleton.extract_vi(result["text"])
+        print("[SKELETON VI]:", skeleton_text)
+        print("[SLOTS]:", slots)
+
+        # ---- OPUS TRANSLATE ----
+        en_raw = self.nmt_vi_en.translate(skeleton_text)
+        print("[NMT VI→EN RAW]:", en_raw)
+
+        # ---- COMPOSE ----
+        en = self.skeleton.compose(en_raw, slots)
+        print("[COMPOSED]:", en)
+
+        self.tts_en.speak(en)
+
+    # ---------------- ENTRY ----------------
+
+    def run_once(self, mode: Mode):
+        if mode is Mode.EN_VI:
+            self._run_en_vi()
+        elif mode is Mode.VI_EN:
+            self._run_vi_en()

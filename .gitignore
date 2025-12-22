@@ -1,20 +1,37 @@
-# Python build
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.log
 
-# Virtual env
-.venv/
-env/
+# Virtualenv
 venv/
-
-# VS Code
-.vscode/
+translator-env/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Model nặng (không đẩy lên GitHub)
+# Artifacts / models (KHÔNG PUSH)
 artifacts/
+models/
+*.onnx
+*.pt
+*.bin
+
+# Audio debug
+artifacts/debug_audio/
+*.wav
+
+# Editor
+.vscode/
+.idea/
+
+# Cache
+.cache/
+
+# stray files
+NoReturn
+TupleStr
+str

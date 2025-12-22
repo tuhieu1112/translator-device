@@ -1,19 +1,14 @@
 # device_app/models/tts_vi.py
+from __future__ import annotations
 
-from pathlib import Path
+from typing import Any, Mapping
+
+from device_app.models.tts_base import TTSBase
 
 
-class TTSVi:
-    """
-    Stub TTS tiếng Việt.
-    Sau này thay synthesize() bằng model TTS thật.
-    """
+class TTSVi(TTSBase):
+    """TTS tiếng Việt dùng Piper."""
 
-    def __init__(self, config):
-        self.config = config
-        print("[TTS VI] Using STUB backend (no real speech).")
-
-    def synthesize(self, text_vi: str) -> str:
-        # TODO: generate file WAV thật từ text_vi
-        print(f"[TTS DEBUG VI] Giả lập tạo WAV từ text: {text_vi}")
-        return str(Path("tts_output_vi.wav"))
+    def __init__(self, config: Mapping[str, Any]) -> None:
+        # key "VI" trong config["TTS"]
+        super().__init__(config=config, tts_key="VI", lang="vi")

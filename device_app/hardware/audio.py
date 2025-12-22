@@ -1,118 +1,190 @@
 # device_app/hardware/audio.py
+from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Dict
+
 import time
+import threading
 
-# Thử import sounddevice + soundfile cho bản debug trên PC
-try:
-    import sounddevice as sd
-    import soundfile as sf
-except Exception:
-    sd = None
-    sf = None
+import numpy as np
+import sounddevice as sd
+import soundfile as sf
 
 
-class BaseAudio(ABC):
-    @abstractmethod
-    def record_once(self, mode: str) -> Path:
+# ----------------- Base class -----------------
+
+
+class AudioBackend:
+    """Interface chung cho backend audio."""
+
+    def record(self, hold_to_stop: bool = False) -> Path:
         """
-        Ghi một đoạn audio, trả về đường dẫn file WAV.
+        Thu âm và trả về đường dẫn file WAV.
+        - hold_to_stop: để dành cho backend trên Raspberry Pi
+          (nhấn giữ để thu, thả ra để dừng). Trên laptop debug
+          sẽ giả lập bằng Enter để DỪNG.
         """
         raise NotImplementedError
 
-    @abstractmethod
-    def play(self, wav_path: str | Path) -> None:
+    def play(self, wav_path: Path) -> None:
         """Phát file WAV."""
         raise NotImplementedError
 
 
-# ---------------------- DEBUG on PC ---------------------- #
+# ----------------- Debug backend (laptop mic) -----------------
 
-class DebugAudio(BaseAudio):
+
+@dataclass
+class DebugAudio(AudioBackend):
     """
-    Dùng trên PC:
-    - Nếu có sounddevice + soundfile: ghi âm thật từ mic và phát lại.
-    - Nếu không có: chỉ giả lập, in log.
+    Backend dùng mic + loa của laptop.
+    - Ghi âm bằng sounddevice
+    - Lưu vào artifacts/debug_audio
+
+    Trên laptop (debug):
+
+      * Ở màn hình [MAIN] bạn nhấn Enter để bắt đầu 1 lượt pipeline.
+      * Trong hàm record():
+          - VỪA GỌI record() LÀ BẮT ĐẦU GHI NGAY
+          - Nhấn Enter một lần nữa để DỪNG ghi
+          - Nếu không bấm thì tự dừng sau tối đa 10s
     """
 
-    def __init__(self, config):
-        self.config = config
-        audio_cfg = config.get("AUDIO_DEBUG", {})
-        self.sample_rate = int(audio_cfg.get("SAMPLE_RATE", 16000))
-        self.duration = float(audio_cfg.get("DURATION_SEC", 5))
-        out_dir = audio_cfg.get("OUTPUT_DIR", "artifacts/debug_audio")
-        self.output_dir = Path(out_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+    config: Dict[str, Any]
 
-        if sd is None or sf is None:
-            print("[AUDIO DEBUG] sounddevice/soundfile not available -> using dummy mode.")
-        else:
-            print("[AUDIO DEBUG] Using sounddevice to record & play audio.")
+    def __post_init__(self) -> None:
+        audio_cfg = self.config.get("AUDIO", {})
+        self.sample_rate: int = int(audio_cfg.get("SAMPLE_RATE", 16000))
+        self.channels: int = int(audio_cfg.get("CHANNELS", 1))
+        self.max_seconds: int = int(audio_cfg.get("MAX_RECORD_SECONDS", 15))
 
-    def record_once(self, mode: str) -> Path:
+        # Thư mục lưu debug wav
+        artifacts_dir = Path(self.config.get("ARTIFACTS_DIR", "artifacts"))
+        self.debug_dir = artifacts_dir / "debug_audio"
+        self.debug_dir.mkdir(parents=True, exist_ok=True)
+
+        print(
+            f"[AUDIO] DebugAudio initialized "
+            f"(sr={self.sample_rate}, ch={self.channels}, "
+            f"max={self.max_seconds}s, dir={self.debug_dir})"
+        )
+
+    # -------- recording --------
+
+    def record(self, hold_to_stop: bool = False) -> Path:
         """
-        Ghi âm một đoạn từ mic (nếu có sounddevice),
-        hoặc giả lập nếu không có.
+        Ghi âm từ mic laptop.
+
+        Luồng debug trên PC:
+        - Bạn đã nhấn Enter ở [MAIN] → pipeline.run_once() được gọi → record() chạy.
+        - record() BẮT ĐẦU GHI NGAY LẬP TỨC.
+        - Nhấn Enter thêm một lần nữa để DỪNG.
+        - Nếu không nhấn → tự dừng sau min(MAX_RECORD_SECONDS, 10) giây.
         """
         ts = int(time.time())
-        out_path = self.output_dir / f"input_{mode.replace('→', '_')}_{ts}.wav"
+        wav_path = self.debug_dir / f"input_{ts}.wav"
 
-        if sd is None or sf is None:
-            input("[AUDIO DEBUG] (DUMMY) Nhấn Enter để GIẢ LẬP: đã ghi xong 1 đoạn audio...")
-            return out_path  # file không tồn tại, nhưng STT stub không cần file thật
+        # Giới hạn tối đa 10s cho debug
+        duration = min(self.max_seconds, 10)
 
-        print(f"[AUDIO DEBUG] Recording {self.duration} s at {self.sample_rate} Hz...")
-        frames = int(self.sample_rate * self.duration)
-        audio = sd.rec(frames, samplerate=self.sample_rate, channels=1, dtype="float32")
-        sd.wait()
-        sf.write(out_path, audio, self.sample_rate)
-        print(f"[AUDIO DEBUG] Saved WAV to {out_path}")
-        return out_path
+        print(
+            f"[AUDIO DEBUG] BẮT ĐẦU ghi (tối đa {duration} s @ {self.sample_rate} Hz)..."
+        )
+        print(
+            "[AUDIO DEBUG] Nhấn Enter để DỪNG ghi (hoặc tự dừng sau giới hạn thời gian)."
+        )
 
-    def play(self, wav_path: str | Path) -> None:
+        # Cờ dừng ghi (dùng dict để mutable trong closure)
+        stop_flag = {"stop": False}
+
+        # Thread chờ Enter để dừng
+        def wait_for_stop():
+            input()
+            stop_flag["stop"] = True
+
+        stop_thread = threading.Thread(target=wait_for_stop, daemon=True)
+        stop_thread.start()
+
+        frames = []
+
+        def callback(indata, frames_count, time_info, status):
+            # Lưu frame hiện tại
+            frames.append(indata.copy())
+            # Nếu đã bấm Enter hoặc hết thời gian thì dừng stream
+            if stop_flag["stop"]:
+                raise sd.CallbackStop()
+
+        # Mở stream thu âm
+        with sd.InputStream(
+            samplerate=self.sample_rate,
+            channels=self.channels,
+            dtype="float32",
+            callback=callback,
+        ):
+            start = time.time()
+            # Vòng lặp chờ cho đến khi nhấn Enter hoặc hết thời gian
+            while not stop_flag["stop"]:
+                if time.time() - start >= duration:
+                    stop_flag["stop"] = True
+                    break
+                time.sleep(0.05)
+
+        # Ghép các frame lại
+        if frames:
+            data = np.concatenate(frames, axis=0)
+        else:
+            # Trường hợp dừng quá nhanh
+            data = np.zeros((1, self.channels), dtype="float32")
+
+        # Nếu nhiều kênh → chuyển về mono
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+
+        sf.write(str(wav_path), data, self.sample_rate)
+        print(f"[AUDIO DEBUG] Saved WAV to {wav_path}")
+
+        return wav_path
+
+    # -------- playback --------
+
+    def play(self, wav_path: Path) -> None:
         wav_path = Path(wav_path)
-        if sd is None or sf is None:
-            print(f"[AUDIO DEBUG] (DUMMY) Giả lập phát file: {wav_path}")
-            return
-
-        if not wav_path.exists():
+        if not wav_path.is_file():
             print(f"[AUDIO DEBUG] File không tồn tại: {wav_path}")
             return
 
-        print(f"[AUDIO DEBUG] Playing {wav_path} ...")
-        data, sr = sf.read(wav_path, dtype="float32")
+        data, sr = sf.read(str(wav_path), dtype="float32")
+        # Nếu stereo → mono
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+
+        print(
+            f"[AUDIO DEBUG] Phát âm thanh (sr={sr}, samples={data.shape[0]}) "
+            f"từ {wav_path}..."
+        )
         sd.play(data, sr)
         sd.wait()
-        print("[AUDIO DEBUG] Done playing.")
 
 
-# ---------------------- Pi (sau này) ---------------------- #
+# ----------------- Factory -----------------
 
-class PiAudio(BaseAudio):
+
+def create_audio(config: Dict[str, Any]) -> AudioBackend:
     """
-    Sau này dùng trên Raspberry Pi + ES8388:
-    - record_once: dùng arecord/ALSA
-    - play: dùng aplay/ALSA
-    Hiện tại để TODO, chỉ in log.
+    Factory tạo backend audio dựa theo config.AUDIO_MODE.
+    Hiện tại:
+      - 'debug' hoặc bất kỳ giá trị nào khác → DebugAudio (mic laptop).
+    Sau này khi lên Raspberry Pi bạn có thể thêm:
+      - if mode == "pi": return Es8388Audio(...)
     """
+    mode = str(config.get("AUDIO_MODE", "debug")).lower()
 
-    def __init__(self, config):
-        self.config = config
-        print("[PI AUDIO] Stub backend, chưa implement arecord/aplay.")
+    if mode == "debug":
+        print("[AUDIO] Using backend: DebugAudio")
+        return DebugAudio(config)
 
-    def record_once(self, mode: str) -> Path:
-        print("[PI AUDIO] record_once() STUB – cần implement khi lên Pi.")
-        # TODO: dùng subprocess.run(['arecord', ...]) để ghi âm
-        return Path("pi_dummy_input.wav")
-
-    def play(self, wav_path: str | Path) -> None:
-        print(f"[PI AUDIO] play({wav_path}) STUB – cần implement khi lên Pi.")
-        # TODO: subprocess.run(['aplay', ...])
-
-
-def create_audio(config) -> BaseAudio:
-    mode = config.get("AUDIO_MODE", "debug")
-    if mode == "pi":
-        return PiAudio(config)
+    # Fallback: dùng DebugAudio nếu mode chưa được hỗ trợ
+    print(f"[AUDIO] AUDIO_MODE='{mode}' chưa được hỗ trợ, dùng DebugAudio.")
     return DebugAudio(config)
