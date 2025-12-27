@@ -1,8 +1,8 @@
 # ==== Backend mode ====
-DISPLAY_MODE: "debug"   # "debug" hoặc "oled"
-BUTTON_MODE:  "debug"   # laptop: debug | pi: gpio
-AUDIO_MODE:   "debug"   # tùy backend audio bạn dùng
-POWER_MODE:   "debug"   # laptop: debug | pi: pi
+DISPLAY_MODE: "debug"
+BUTTON_MODE:  "debug"
+AUDIO_MODE:   "debug"
+POWER_MODE:   "debug"
 
 ARTIFACTS_DIR: "artifacts"
 
@@ -21,28 +21,28 @@ NMT:
     MODEL_DIR: "artifacts/nmt_vi_en"
   EN_VI:
     MODEL_DIR: "artifacts/nmt_en_vi"
-  EN_EN:
-    MODEL_DIR: "artifacts/nmt_en_en"
+  # EN_EN:
+  #   MODEL_DIR: "artifacts/nmt_en_en"  # chưa dùng
 
 # ===== TTS =====
 TTS:
   EN:
     BACKEND: "piper"
-    PIPER_EXE: "piper"     # Windows: "piper.exe" hoặc path đầy đủ
+    PIPER_EXE: "piper"
     VOICE: "artifacts/tts_en/en_US-ljspeech-high.onnx"
 
   VI:
     BACKEND: "piper"
-    PIPER_EXE: "piper"     # Windows: "piper.exe" hoặc path đầy đủ
+    PIPER_EXE: "piper"
     VOICE: "artifacts/tts_vi/vi_VN-vais1000-medium.onnx"
 
 # ===== Audio =====
 AUDIO:
   SAMPLE_RATE: 16000
   CHANNELS: 1
-  MAX_RECORD_SECONDS: 7
+  MAX_RECORD_SECONDS: 7  # giữ làm fail-safe
 
-# ===== Buttons (Pi) =====
+# ===== Buttons =====
 BUTTONS:
   TALK_PIN: 23
   MODE_PIN: 24
