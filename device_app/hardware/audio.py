@@ -1,31 +1,28 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Any
-import os
 
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
+import librosa
 
 
 class DebugAudio:
     def __init__(self, config: Dict[str, Any]):
         audio_cfg = config.get("AUDIO", {})
-        self.sample_rate = int(audio_cfg.get("SAMPLE_RATE", 16000))
+        self.target_sr = int(audio_cfg.get("SAMPLE_RATE", 16000))
         self.channels = int(audio_cfg.get("CHANNELS", 1))
 
         self._frames = []
         self._stream = None
 
-        # ✅ FIX WINDOWS + LINUX
-        self._wav_path = Path(os.environ.get("TMP", "/tmp")) / "ptt_record.wav"
+        base = Path(config.get("ARTIFACTS_DIR", "artifacts"))
+        tmp = base / "tmp"
+        tmp.mkdir(parents=True, exist_ok=True)
+        self._wav_path = tmp / "ptt_record.wav"
 
-        print(f"[AUDIO] DebugAudio ready (sr={self.sample_rate})")
-
-    def record(self) -> Path:
-        self.start_record()
-        input("[AUDIO] Press Enter to stop recording...")
-        return self.stop_record()
+        print(f"[AUDIO] Target SR={self.target_sr}")
 
     def start_record(self):
         self._frames = []
@@ -33,26 +30,33 @@ class DebugAudio:
         def callback(indata, frames, time_info, status):
             self._frames.append(indata.copy())
 
+        # ❗ KHÔNG ÉP sample_rate
         self._stream = sd.InputStream(
-            samplerate=self.sample_rate,
             channels=self.channels,
+            dtype="float32",
             callback=callback,
         )
         self._stream.start()
         print("[AUDIO] Recording started")
 
     def stop_record(self) -> Path:
-        if self._stream:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+        self._stream.stop()
+        self._stream.close()
+        self._stream = None
 
         audio = np.concatenate(self._frames, axis=0)
         if audio.ndim > 1:
             audio = audio.mean(axis=1)
 
-        sf.write(self._wav_path, audio, self.sample_rate)
-        print(f"[AUDIO] Recording saved: {self._wav_path}")
+        # 🔥 RESAMPLE VỀ 16K
+        audio_16k = librosa.resample(
+            audio,
+            orig_sr=sd.query_devices(None, "input")["default_samplerate"],
+            target_sr=self.target_sr,
+        )
+
+        sf.write(self._wav_path, audio_16k, self.target_sr)
+        print(f"[AUDIO] Saved 16k WAV: {self._wav_path}")
         return self._wav_path
 
 
