@@ -1,6 +1,4 @@
-# device_app/hardware/buttons.py
 from __future__ import annotations
-
 from typing import Any, Mapping
 import time
 
@@ -11,84 +9,115 @@ except Exception:
 
 
 # ==========================================================
-#  Backend debug (laptop)
-#  - TALK: main sẽ dùng Enter để chạy pipeline (audio sẽ tự giả lập hold)
-#  - MODE: debug KHÔNG auto short nữa để tránh đổi mode lung tung
+# DEBUG BUTTONS (Laptop / VS Code)
 # ==========================================================
 class DebugButtons:
     def __init__(self, cfg: Mapping[str, Any]) -> None:
         pass
 
-    # TALK ---------------------------------------------------
-    def wait_talk_press(self) -> None:
-        # main debug thường tự xử lý Enter, để đây cho tương thích
-        input("[DEBUG BUTTON] Nhấn Enter để bắt đầu 1 lượt (TALK)...")
+    # TALK --------------------------------------------------
+    def wait_talk(self) -> None:
+        input("[DEBUG] Press Enter to TALK...")
 
-    def is_talk_pressed(self) -> bool:
-        return False
-
-    # MODE ---------------------------------------------------
-    def wait_mode_short_or_long(self, long_sec: float = 5.0) -> str:
+    # MODE --------------------------------------------------
+    def poll_mode_event(self) -> str | None:
         """
-        Debug: không tự trả về 'short' nữa (vì sẽ làm đổi mode liên tục).
-        Trả về "" nghĩa là không có sự kiện mode.
-        (Nếu muốn mô phỏng, bạn xử lý ở main bằng phím m/p như trước.)
+        Debug mode: không có mode vật lý
+        return None
         """
-        return ""
+        return None
 
 
 # ==========================================================
-#  Backend GPIO thật trên Raspberry Pi
+# GPIO BUTTONS (Raspberry Pi)
 # ==========================================================
 class GpioButtons:
     """
-    Quản lý nút TALK + MODE bằng GPIO.
-    - TALK: nhấn giữ để ghi, thả để dừng.
-    - MODE: bấm ngắn đổi chế độ, giữ lâu (vd 5s) để tắt máy.
+    GPIO Buttons:
+    - TALK: nhấn giữ để ghi, thả để dừng
+    - MODE:
+        * nhấn ngắn -> đổi ngôn ngữ
+        * giữ lâu   -> shutdown
     """
 
     def __init__(self, cfg: Mapping[str, Any]) -> None:
         if GPIO is None:
-            raise RuntimeError("RPi.GPIO không khả dụng trên môi trường hiện tại.")
+            raise RuntimeError("RPi.GPIO is not available")
 
         buttons_cfg = cfg.get("BUTTONS", {})
         self.talk_pin = int(buttons_cfg.get("TALK_PIN", 23))
         self.mode_pin = int(buttons_cfg.get("MODE_PIN", 24))
 
+        self.long_press_sec = float(buttons_cfg.get("LONG_PRESS_SEC", 5.0))
+
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(self.talk_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
         GPIO.setup(self.mode_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-    # TALK ---------------------------------------------------
-    def is_talk_pressed(self) -> bool:
-        return GPIO.input(self.talk_pin) == GPIO.LOW
+        self._mode_pressed_at: float | None = None
 
-    def wait_talk_press(self) -> None:
-        while not self.is_talk_pressed():
-            time.sleep(0.01)
+        print(f"[BUTTON] GPIO ready " f"(TALK={self.talk_pin}, MODE={self.mode_pin})")
 
-    # MODE ---------------------------------------------------
-    def wait_mode_short_or_long(self, long_sec: float = 5.0) -> str:
+    # ======================================================
+    # TALK (BLOCKING)
+    # ======================================================
+    def wait_talk(self) -> None:
         """
-        Chờ 1 lần nhấn MODE (BLOCKING).
-        - Nếu nhả ra trước long_sec -> 'short'
-        - Nếu giữ ≥ long_sec       -> 'long'
+        BLOCK cho tới khi TALK được nhấn (LOW)
         """
-        while GPIO.input(self.mode_pin) == GPIO.HIGH:
+        while GPIO.input(self.talk_pin) == GPIO.HIGH:
             time.sleep(0.01)
 
-        start = time.time()
-        while GPIO.input(self.mode_pin) == GPIO.LOW:
+        # chờ thả ra (push-to-talk)
+        while GPIO.input(self.talk_pin) == GPIO.LOW:
             time.sleep(0.01)
 
-        duration = time.time() - start
-        return "long" if duration >= long_sec else "short"
+    # ======================================================
+    # MODE (NON-BLOCKING, POLL)
+    # ======================================================
+    def poll_mode_event(self) -> str | None:
+        """
+        NON-BLOCKING
+        return:
+          None      : không có sự kiện
+          "short"   : nhấn ngắn -> đổi mode
+          "long"    : nhấn giữ -> shutdown
+        """
+
+        state = GPIO.input(self.mode_pin)
+
+        # MODE vừa được nhấn
+        if state == GPIO.LOW and self._mode_pressed_at is None:
+            self._mode_pressed_at = time.time()
+            return None
+
+        # MODE đang giữ
+        if state == GPIO.LOW and self._mode_pressed_at is not None:
+            duration = time.time() - self._mode_pressed_at
+            if duration >= self.long_press_sec:
+                self._mode_pressed_at = None
+                return "long"
+            return None
+
+        # MODE vừa được thả
+        if state == GPIO.HIGH and self._mode_pressed_at is not None:
+            duration = time.time() - self._mode_pressed_at
+            self._mode_pressed_at = None
+            if duration < self.long_press_sec:
+                return "short"
+
+        return None
 
 
+# ==========================================================
+# FACTORY
+# ==========================================================
 def create_buttons(cfg: Mapping[str, Any]):
     mode = str(cfg.get("BUTTON_MODE", "debug")).lower()
+
     if mode == "gpio":
-        print("[BUTTON] Using backend: GPIO")
+        print("[BUTTON] Using GPIO backend")
         return GpioButtons(cfg)
-    print("[BUTTON] Using backend: DebugButtons")
+
+    print("[BUTTON] Using Debug backend")
     return DebugButtons(cfg)
