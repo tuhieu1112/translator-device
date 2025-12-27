@@ -1,85 +1,122 @@
-# device_app/hardware/power.py
 from __future__ import annotations
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
-from dataclasses import dataclass
-from typing import Any, Mapping, Optional
-import time
+from device_app.core.modes import Mode
+from device_app.models.stt_en import STTEn
+from device_app.models.stt_vi import STTVi
+from device_app.models.nmt_en_vi import NMTEnVi
+from device_app.models.nmt_vi_en import NMTViEn
+from device_app.models.tts_en import TTSEn
+from device_app.models.tts_vi import TTSVi
+from device_app.models.nlp.nlp_processor import NLPProcessorV2
+from device_app.models.nlp.skeleton_translation import SkeletonTranslator
 
 
-# ===== Backend cơ sở =====
 @dataclass
-class BasePowerBackend:
-    def get_battery_percent(self) -> int:
-        """
-        Trả về % pin (0–100).
-        """
-        raise NotImplementedError
-
-
-# ===== Backend debug (chạy trên laptop) =====
-class DebugPowerBackend(BasePowerBackend):
+class TranslatorPipeline:
     """
-    Mô phỏng pin cho khi chạy trên laptop:
-    - Bắt đầu 100%
-    - Có thể cho tụt rất chậm theo thời gian nếu muốn
+    PIPELINE CUỐI – NHẬN WAV → XỬ LÝ → PHÁT ÂM
+
+    - Không điều khiển button
+    - Không điều khiển audio
+    - Không vòng lặp
     """
 
-    def __init__(self) -> None:
-        self._start = time.time()
+    config: Any
+    display: Any
+    buttons: Any | None
+    audio: Any | None
+    power: Any
 
-    def get_battery_percent(self) -> int:
-        # Giả lập tụt 1% mỗi 10 phút, nhưng không < 95%
-        elapsed = time.time() - self._start
-        drain = int(elapsed // 600)  # 600s = 10 phút
-        pct = max(100 - drain, 95)
-        return pct
+    stt_en: STTEn = field(init=False)
+    stt_vi: STTVi = field(init=False)
+    nmt_en_vi: NMTEnVi = field(init=False)
+    nmt_vi_en: NMTViEn = field(init=False)
+    tts_en: TTSEn = field(init=False)
+    tts_vi: TTSVi = field(init=False)
+    nlp_en: NLPProcessorV2 = field(init=False)
+    nlp_vi: NLPProcessorV2 = field(init=False)
+    skeleton: SkeletonTranslator = field(init=False)
 
+    # --------------------------------------------------
 
-# ===== Backend thật cho Raspberry Pi =====
-class PiPowerBackend(BasePowerBackend):
-    """
-    Sau này bạn có thể đọc điện áp từ ADC / IC đo pin.
-    Hiện tại tạm trả về 100% để chạy được pipeline.
-    """
+    def __post_init__(self) -> None:
+        print("[PIPELINE] Initializing models...")
 
-    def __init__(self, adc_channel: Optional[int] = None) -> None:
-        self.adc_channel = adc_channel
+        self.stt_en = STTEn(self.config)
+        self.stt_vi = STTVi(self.config)
 
-    def get_battery_percent(self) -> int:
-        # TODO: implement đọc pin thật từ ADC / fuel gauge
-        return 100
+        self.nmt_en_vi = NMTEnVi(self.config)
+        self.nmt_vi_en = NMTViEn(self.config)
 
+        self.tts_en = TTSEn(self.config)
+        self.tts_vi = TTSVi(self.config)
 
-# ===== Lớp PowerManager mà pipeline.py đang import =====
-class PowerManager:
-    """
-    Quản lý backend pin, chọn theo POWER_MODE trong config.yaml
+        self.nlp_en = NLPProcessorV2(lang="en")
+        self.nlp_vi = NLPProcessorV2(lang="vi")
 
-    POWER_MODE: "debug" hoặc "pi"
-    POWER:
-      BATTERY_ADC_CH: (tùy chọn) kênh ADC khi dùng trên Pi
-    """
+        self.skeleton = SkeletonTranslator()
 
-    def __init__(self, config: Mapping[str, Any]) -> None:
-        power_mode = str(config.get("POWER_MODE", "debug")).lower()
-        power_cfg = config.get("POWER", {})
+        print("[PIPELINE] Ready")
 
-        if power_mode == "pi":
-            adc_ch = power_cfg.get("BATTERY_ADC_CH")
-            backend: BasePowerBackend = PiPowerBackend(adc_channel=adc_ch)
+    # --------------------------------------------------
+    # PUBLIC API
+    # --------------------------------------------------
+
+    def process_wav(self, wav: Path, mode: Mode) -> None:
+        if mode == Mode.VI_EN:
+            self._vi_en(wav)
         else:
-            backend = DebugPowerBackend()
+            self._en_vi(wav)
 
-        self._backend = backend
-        print(f"[POWER] Using backend: {backend.__class__.__name__}")
+    # --------------------------------------------------
+    # VI → EN
+    # --------------------------------------------------
 
-    def get_battery_percent(self) -> int:
-        return self._backend.get_battery_percent()
+    def _vi_en(self, wav: Path) -> None:
+        text = (self.stt_vi.transcribe_file(wav) or "").strip()
+        print("[STT VI]:", text)
 
+        result = self.nlp_vi.process(text)
+        if not result["text"]:
+            self.tts_vi.speak(result["fallback"])
+            return
 
-# ===== Factory cho main.py (để không phải sửa main) =====
-def create_power_manager(config: Mapping[str, Any]) -> PowerManager:
-    """
-    Hàm factory, được main.py import: from device_app.hardware.power import create_power_manager
-    """
-    return PowerManager(config)
+        skel, slots = self.skeleton.extract_vi(result["text"])
+        print("[SKELETON VI]:", skel)
+        print("[SLOTS]:", slots)
+
+        en_raw = self.nmt_vi_en.translate(skel)
+        print("[NMT VI→EN]:", en_raw)
+
+        out = self.skeleton.compose(en_raw, slots)
+        print("[COMPOSED]:", out)
+
+        self.tts_en.speak(out)
+
+    # --------------------------------------------------
+    # EN → VI
+    # --------------------------------------------------
+
+    def _en_vi(self, wav: Path) -> None:
+        text = (self.stt_en.transcribe_file(wav) or "").strip()
+        print("[STT EN]:", text)
+
+        result = self.nlp_en.process(text)
+        if not result["text"]:
+            self.tts_en.speak(result["fallback"])
+            return
+
+        skel, slots = self.skeleton.extract_en(result["text"])
+        print("[SKELETON EN]:", skel)
+        print("[SLOTS]:", slots)
+
+        vi_raw = self.nmt_en_vi.translate(skel)
+        print("[NMT EN→VI]:", vi_raw)
+
+        out = self.skeleton.compose(vi_raw, slots)
+        print("[COMPOSED]:", out)
+
+        self.tts_vi.speak(out)

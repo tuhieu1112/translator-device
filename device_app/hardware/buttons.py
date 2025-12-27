@@ -13,18 +13,22 @@ except Exception:
 # ==========================================================
 class DebugButtons:
     def __init__(self, cfg: Mapping[str, Any]) -> None:
-        pass
+        self._pressed = False
 
-    # TALK --------------------------------------------------
-    def wait_talk(self) -> None:
-        input("[DEBUG] Press Enter to TALK...")
+    # ---------------- TALK ----------------
+    def wait_talk_press(self) -> None:
+        input("[DEBUG] Press Enter to START talking...")
+        self._pressed = True
 
-    # MODE --------------------------------------------------
+    def is_talk_pressed(self) -> bool:
+        # Debug: coi như đang giữ cho tới khi stop_record
+        return self._pressed
+
+    def release(self) -> None:
+        self._pressed = False
+
+    # ---------------- MODE ----------------
     def poll_mode_event(self) -> str | None:
-        """
-        Debug mode: không có mode vật lý
-        return None
-        """
         return None
 
 
@@ -36,8 +40,8 @@ class GpioButtons:
     GPIO Buttons:
     - TALK: nhấn giữ để ghi, thả để dừng
     - MODE:
-        * nhấn ngắn -> đổi ngôn ngữ
-        * giữ lâu   -> shutdown
+        * short press -> đổi ngôn ngữ
+        * long press  -> shutdown
     """
 
     def __init__(self, cfg: Mapping[str, Any]) -> None:
@@ -47,7 +51,6 @@ class GpioButtons:
         buttons_cfg = cfg.get("BUTTONS", {})
         self.talk_pin = int(buttons_cfg.get("TALK_PIN", 23))
         self.mode_pin = int(buttons_cfg.get("MODE_PIN", 24))
-
         self.long_press_sec = float(buttons_cfg.get("LONG_PRESS_SEC", 5.0))
 
         GPIO.setmode(GPIO.BCM)
@@ -56,50 +59,29 @@ class GpioButtons:
 
         self._mode_pressed_at: float | None = None
 
-        print(f"[BUTTON] GPIO ready " f"(TALK={self.talk_pin}, MODE={self.mode_pin})")
+        print(f"[BUTTON] GPIO ready (TALK={self.talk_pin}, MODE={self.mode_pin})")
 
-    # ======================================================
-    # TALK (BLOCKING)
-    # ======================================================
-    def wait_talk(self) -> None:
-        """
-        BLOCK cho tới khi TALK được nhấn (LOW)
-        """
+    # ---------------- TALK ----------------
+    def wait_talk_press(self) -> None:
         while GPIO.input(self.talk_pin) == GPIO.HIGH:
             time.sleep(0.01)
 
-        # chờ thả ra (push-to-talk)
-        while GPIO.input(self.talk_pin) == GPIO.LOW:
-            time.sleep(0.01)
+    def is_talk_pressed(self) -> bool:
+        return GPIO.input(self.talk_pin) == GPIO.LOW
 
-    # ======================================================
-    # MODE (NON-BLOCKING, POLL)
-    # ======================================================
+    # ---------------- MODE ----------------
     def poll_mode_event(self) -> str | None:
-        """
-        NON-BLOCKING
-        return:
-          None      : không có sự kiện
-          "short"   : nhấn ngắn -> đổi mode
-          "long"    : nhấn giữ -> shutdown
-        """
-
         state = GPIO.input(self.mode_pin)
 
-        # MODE vừa được nhấn
         if state == GPIO.LOW and self._mode_pressed_at is None:
             self._mode_pressed_at = time.time()
             return None
 
-        # MODE đang giữ
         if state == GPIO.LOW and self._mode_pressed_at is not None:
-            duration = time.time() - self._mode_pressed_at
-            if duration >= self.long_press_sec:
+            if time.time() - self._mode_pressed_at >= self.long_press_sec:
                 self._mode_pressed_at = None
                 return "long"
-            return None
 
-        # MODE vừa được thả
         if state == GPIO.HIGH and self._mode_pressed_at is not None:
             duration = time.time() - self._mode_pressed_at
             self._mode_pressed_at = None

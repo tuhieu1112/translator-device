@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
+import time
 
 from device_app.core.modes import Mode
 from device_app.models.stt_en import STTEn
@@ -31,67 +32,116 @@ class TranslatorPipeline:
     nlp_vi: NLPProcessorV2 = field(init=False)
     skeleton: SkeletonTranslator = field(init=False)
 
+    # ================= INIT =================
+
     def __post_init__(self):
+        print("[PIPELINE] Initializing models...")
+
         self.stt_en = STTEn(self.config)
         self.stt_vi = STTVi(self.config)
+
         self.nmt_en_vi = NMTEnVi(self.config)
         self.nmt_vi_en = NMTViEn(self.config)
+
         self.tts_en = TTSEn(self.config)
         self.tts_vi = TTSVi(self.config)
+
         self.nlp_en = NLPProcessorV2(lang="en")
         self.nlp_vi = NLPProcessorV2(lang="vi")
+
         self.skeleton = SkeletonTranslator()
 
-    # ---------------- ENTRY ----------------
+        print("[PIPELINE] Ready.")
 
-    def run_once(self, mode: Mode):
-        if mode == Mode.VI_EN:
-            self._vi_en()
-        else:
-            self._en_vi()
+    # ================= MAIN LOOP =================
 
-    # ---------------- VI → EN ----------------
+    def run(self, start_mode: Mode = Mode.VI_EN):
+        mode = start_mode
+        self.display.show_mode(mode)
+
+        print("[PIPELINE] Device loop started")
+
+        while True:
+            # --- MODE BUTTON (non-blocking) ---
+            evt = self.buttons.poll_mode_event()
+            if evt == "short":
+                mode = Mode.EN_VI if mode == Mode.VI_EN else Mode.VI_EN
+                self.display.show_mode(mode)
+                print(f"[MODE] Switched to {mode.name}")
+
+            elif evt == "long":
+                print("[POWER] Shutdown requested")
+                self.power.shutdown()
+                return
+
+            # --- TALK BUTTON (blocking) ---
+            self.buttons.wait_talk_press()
+
+            if mode == Mode.VI_EN:
+                self._vi_en()
+            else:
+                self._en_vi()
+
+            time.sleep(0.1)
+
+    # ================= VI → EN =================
 
     def _vi_en(self):
-        self.buttons.wait_talk_press()
+        self.display.show_status("", Mode.VI_EN, "RECORDING", 100)
         self.audio.start_record()
 
         while self.buttons.is_talk_pressed():
-            pass
+            time.sleep(0.01)
 
         wav = self.audio.stop_record()
 
-        text = (self.stt_vi.transcribe_file(wav) or "").strip()
-        result = self.nlp_vi.process(text)
+        if hasattr(self.buttons, "release"):
+            self.buttons.release()
 
+        text = (self.stt_vi.transcribe_file(wav) or "").strip()
+        print("[STT VI]:", text)
+
+        result = self.nlp_vi.process(text)
         if not result["text"]:
             self.tts_vi.speak(result["fallback"])
             return
 
+        self.display.show_status("", Mode.VI_EN, "TRANSLATING", 100)
+
         skel, slots = self.skeleton.extract_vi(result["text"])
-        en = self.nmt_vi_en.translate(skel)
-        out = self.skeleton.compose(en, slots)
+        en_raw = self.nmt_vi_en.translate(skel)
+        out = self.skeleton.compose(en_raw, slots)
+
+        print("[OUT EN]:", out)
         self.tts_en.speak(out)
 
-    # ---------------- EN → VI ----------------
+    # ================= EN → VI =================
 
     def _en_vi(self):
-        self.buttons.wait_talk_press()
+        self.display.show_status("", Mode.EN_VI, "RECORDING", 100)
         self.audio.start_record()
 
         while self.buttons.is_talk_pressed():
-            pass
+            time.sleep(0.01)
 
         wav = self.audio.stop_record()
 
-        text = (self.stt_en.transcribe_file(wav) or "").strip()
-        result = self.nlp_en.process(text)
+        if hasattr(self.buttons, "release"):
+            self.buttons.release()
 
+        text = (self.stt_en.transcribe_file(wav) or "").strip()
+        print("[STT EN]:", text)
+
+        result = self.nlp_en.process(text)
         if not result["text"]:
             self.tts_en.speak(result["fallback"])
             return
 
+        self.display.show_status("", Mode.EN_VI, "TRANSLATING", 100)
+
         skel, slots = self.skeleton.extract_en(result["text"])
-        vi = self.nmt_en_vi.translate(skel)
-        out = self.skeleton.compose(vi, slots)
+        vi_raw = self.nmt_en_vi.translate(skel)
+        out = self.skeleton.compose(vi_raw, slots)
+
+        print("[OUT VI]:", out)
         self.tts_vi.speak(out)
