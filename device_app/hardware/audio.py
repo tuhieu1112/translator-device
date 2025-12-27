@@ -16,6 +16,7 @@ class DebugAudio:
 
         self._frames = []
         self._stream = None
+        self._orig_sr = None
 
         base = Path(config.get("ARTIFACTS_DIR", "artifacts"))
         tmp = base / "tmp"
@@ -24,20 +25,24 @@ class DebugAudio:
 
         print(f"[AUDIO] Target SR={self.target_sr}")
 
+    # ---------------- PUSH TO TALK ----------------
+
     def start_record(self):
         self._frames = []
 
         def callback(indata, frames, time_info, status):
             self._frames.append(indata.copy())
 
-        # ❗ KHÔNG ÉP sample_rate
+        # ❗ Không ép samplerate để tránh lỗi ALSA
         self._stream = sd.InputStream(
             channels=self.channels,
             dtype="float32",
             callback=callback,
         )
+        self._orig_sr = self._stream.samplerate
         self._stream.start()
-        print("[AUDIO] Recording started")
+
+        print(f"[AUDIO] Recording started (sr={self._orig_sr})")
 
     def stop_record(self) -> Path:
         self._stream.stop()
@@ -48,15 +53,16 @@ class DebugAudio:
         if audio.ndim > 1:
             audio = audio.mean(axis=1)
 
-        # 🔥 RESAMPLE VỀ 16K
+        # 🔥 Resample về 16k cho STT
         audio_16k = librosa.resample(
             audio,
-            orig_sr=sd.query_devices(None, "input")["default_samplerate"],
+            orig_sr=self._orig_sr,
             target_sr=self.target_sr,
         )
 
         sf.write(self._wav_path, audio_16k, self.target_sr)
         print(f"[AUDIO] Saved 16k WAV: {self._wav_path}")
+
         return self._wav_path
 
 

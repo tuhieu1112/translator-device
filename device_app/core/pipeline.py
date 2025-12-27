@@ -42,31 +42,55 @@ class TranslatorPipeline:
         self.nlp_vi = NLPProcessorV2(lang="vi")
         self.skeleton = SkeletonTranslator()
 
+    # ---------------- ENTRY ----------------
+
     def run_once(self, mode: Mode):
         if mode == Mode.VI_EN:
             self._vi_en()
         else:
             self._en_vi()
 
+    # ---------------- VI → EN ----------------
+
     def _vi_en(self):
-        wav = self.audio.record()
+        self.buttons.wait_talk_press()
+        self.audio.start_record()
+
+        while self.buttons.is_talk_pressed():
+            pass
+
+        wav = self.audio.stop_record()
+
         text = (self.stt_vi.transcribe_file(wav) or "").strip()
         result = self.nlp_vi.process(text)
+
         if not result["text"]:
             self.tts_vi.speak(result["fallback"])
             return
+
         skel, slots = self.skeleton.extract_vi(result["text"])
         en = self.nmt_vi_en.translate(skel)
         out = self.skeleton.compose(en, slots)
         self.tts_en.speak(out)
 
+    # ---------------- EN → VI ----------------
+
     def _en_vi(self):
-        wav = self.audio.record()
+        self.buttons.wait_talk_press()
+        self.audio.start_record()
+
+        while self.buttons.is_talk_pressed():
+            pass
+
+        wav = self.audio.stop_record()
+
         text = (self.stt_en.transcribe_file(wav) or "").strip()
         result = self.nlp_en.process(text)
+
         if not result["text"]:
             self.tts_en.speak(result["fallback"])
             return
+
         skel, slots = self.skeleton.extract_en(result["text"])
         vi = self.nmt_en_vi.translate(skel)
         out = self.skeleton.compose(vi, slots)
