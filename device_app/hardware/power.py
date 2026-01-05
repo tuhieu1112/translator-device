@@ -8,7 +8,7 @@ class PowerManager:
 
     - Read voltage from TP4056 OUT via ADS1015
     - Convert voltage to battery percentage
-    - Trigger safe shutdown when battery is low
+    - Safe shutdown when battery is low
     """
 
     def __init__(
@@ -18,34 +18,41 @@ class PowerManager:
         r2: int = 100_000,
         low_voltage: float = 3.2,
     ) -> None:
-        # Import hardware libraries at runtime
-        # → tránh crash khi chạy DEV / test / không có I2C
-        import board
-        import busio
-        import adafruit_ads1x15.ads1015 as ADS
-        from adafruit_ads1x15.analog_in import AnalogIn
-
-        self.ratio = (r1 + r2) / r2
+        self.available = False
         self.low_voltage = low_voltage
+        self.ratio = (r1 + r2) / r2
 
-        i2c = busio.I2C(board.SCL, board.SDA)
-        ads = ADS.ADS1015(i2c)
-        ads.gain = 1  # ±4.096V
+        try:
+            import board
+            import busio
+            import adafruit_ads1x15.ads1015 as ADS
+            from adafruit_ads1x15.analog_in import AnalogIn
 
-        self.chan = AnalogIn(ads, getattr(ADS, f"P{channel}"))
+            i2c = busio.I2C(board.SCL, board.SDA)
+            ads = ADS.ADS1015(i2c)  # mặc định 0x48
+            ads.gain = 1
 
-        print("[POWER] ADS1015 initialized")
+            self.chan = AnalogIn(ads, getattr(ADS, f"P{channel}"))
+            self.available = True
+
+            print("[POWER] ADS1015 detected")
+
+        except Exception as e:
+            print(f"[POWER] ADS1015 not available: {e}")
+            print("[POWER] Running without battery monitoring")
 
     # ================= PUBLIC API =================
 
     def get_voltage(self) -> float:
-        """Return battery voltage after divider compensation"""
+        if not self.available:
+            return 0.0
         return round(self.chan.voltage * self.ratio, 2)
 
     def get_percent(self) -> int:
-        """Estimate battery percentage from voltage"""
-        v = self.get_voltage()
+        if not self.available:
+            return 0
 
+        v = self.get_voltage()
         if v >= 4.2:
             return 100
         if v >= 4.0:
@@ -61,24 +68,15 @@ class PowerManager:
         return 0
 
     def is_low(self) -> bool:
-        """Check if battery is below safe threshold"""
+        if not self.available:
+            return False
         return self.get_voltage() <= self.low_voltage
 
     def shutdown(self) -> None:
-        """Shutdown system safely"""
         print("[POWER] Shutdown system")
         os.system("sudo shutdown now")
 
 
-# ================= FACTORY =================
-
-
 def create_power_manager(config=None) -> PowerManager:
-    """
-    Factory function for PowerManager
-
-    - Giữ interface thống nhất với main.py
-    - Dễ mở rộng nếu sau này đọc config.yaml
-    """
-    print("[POWER] Using PowerManager (ADS1015)")
+    print("[POWER] Initializing PowerManager")
     return PowerManager()
