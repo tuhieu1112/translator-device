@@ -2,16 +2,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 import time
+import os
 
 from device_app.core.modes import Mode
-from device_app.models.stt_en import STTEn
-from device_app.models.stt_vi import STTVi
-from device_app.models.nmt_en_vi import NMTEnVi
-from device_app.models.nmt_vi_en import NMTViEn
-from device_app.models.tts_en import TTSEn
-from device_app.models.tts_vi import TTSVi
-from device_app.models.nlp.nlp_processor import NLPProcessorV2
-from device_app.models.nlp.skeleton_translation import SkeletonTranslator
 
 
 @dataclass
@@ -22,20 +15,35 @@ class TranslatorPipeline:
     audio: Any
     power: Any
 
-    stt_en: STTEn = field(init=False)
-    stt_vi: STTVi = field(init=False)
-    nmt_en_vi: NMTEnVi = field(init=False)
-    nmt_vi_en: NMTViEn = field(init=False)
-    tts_en: TTSEn = field(init=False)
-    tts_vi: TTSVi = field(init=False)
-    nlp_en: NLPProcessorV2 = field(init=False)
-    nlp_vi: NLPProcessorV2 = field(init=False)
-    skeleton: SkeletonTranslator = field(init=False)
+    stt_en: Any = field(init=False, default=None)
+    stt_vi: Any = field(init=False, default=None)
+    nmt_en_vi: Any = field(init=False, default=None)
+    nmt_vi_en: Any = field(init=False, default=None)
+    tts_en: Any = field(init=False, default=None)
+    tts_vi: Any = field(init=False, default=None)
+    nlp_en: Any = field(init=False, default=None)
+    nlp_vi: Any = field(init=False, default=None)
+    skeleton: Any = field(init=False, default=None)
 
     # ================= INIT =================
 
     def __post_init__(self):
         print("[PIPELINE] Initializing models...")
+
+        # -------- DEV MODE: KHÔNG LOAD MODEL --------
+        if os.getenv("DEVICE_ENV") == "DEV":
+            print("[PIPELINE] DEV mode - skip model loading")
+            return
+
+        # -------- PROD MODE: LOAD MODEL THẬT --------
+        from device_app.models.stt_en import STTEn
+        from device_app.models.stt_vi import STTVi
+        from device_app.models.nmt_en_vi import NMTEnVi
+        from device_app.models.nmt_vi_en import NMTViEn
+        from device_app.models.tts_en import TTSEn
+        from device_app.models.tts_vi import TTSVi
+        from device_app.models.nlp.nlp_processor import NLPProcessorV2
+        from device_app.models.nlp.skeleton_translation import SkeletonTranslator
 
         self.stt_en = STTEn(self.config)
         self.stt_vi = STTVi(self.config)
@@ -51,7 +59,7 @@ class TranslatorPipeline:
 
         self.skeleton = SkeletonTranslator()
 
-        print("[PIPELINE] Ready.")
+        print("[PIPELINE] Ready")
 
     # ================= MAIN LOOP =================
 
@@ -62,20 +70,32 @@ class TranslatorPipeline:
         print("[PIPELINE] Device loop started")
 
         while True:
-            # --- MODE BUTTON (non-blocking) ---
+            # -------- POWER CHECK --------
+            percent = self.power.get_percent()
+            self.display.show_battery(percent)
+
+            if self.power.is_low():
+                print("[POWER] Low battery")
+                self.power.shutdown()
+                return
+
+            # -------- MODE BUTTON --------
             evt = self.buttons.poll_mode_event()
             if evt == "short":
                 mode = Mode.EN_VI if mode == Mode.VI_EN else Mode.VI_EN
                 self.display.show_mode(mode)
-                print(f"[MODE] Switched to {mode.name}")
+                time.sleep(0.2)
+                continue
 
-            elif evt == "long":
+            if evt == "long":
                 print("[POWER] Shutdown requested")
                 self.power.shutdown()
                 return
 
-            # --- TALK BUTTON (blocking) ---
-            self.buttons.wait_talk_press()
+            # -------- TALK BUTTON --------
+            if not self.buttons.is_talk_pressed():
+                time.sleep(0.05)
+                continue
 
             if mode == Mode.VI_EN:
                 self._vi_en()
@@ -94,9 +114,7 @@ class TranslatorPipeline:
             time.sleep(0.01)
 
         wav = self.audio.stop_record()
-
-        if hasattr(self.buttons, "release"):
-            self.buttons.release()
+        self.buttons.release()
 
         text = (self.stt_vi.transcribe_file(wav) or "").strip()
         print("[STT VI]:", text)
@@ -125,9 +143,7 @@ class TranslatorPipeline:
             time.sleep(0.01)
 
         wav = self.audio.stop_record()
-
-        if hasattr(self.buttons, "release"):
-            self.buttons.release()
+        self.buttons.release()
 
         text = (self.stt_en.transcribe_file(wav) or "").strip()
         print("[STT EN]:", text)
