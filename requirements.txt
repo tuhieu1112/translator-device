@@ -1,8 +1,21 @@
-pyyaml
+# ===== CORE =====
+PyYAML
 numpy
+scipy
+
+# ===== AUDIO =====
 sounddevice
 soundfile
+librosa
+
+# ===== ML / STT / NMT =====
 onnxruntime
 torch
 transformers
 sentencepiece
+
+# ===== UTILS =====
+tqdm
+requests
+adafruit-blinka
+adafruit-circuitpython-ads1x15
