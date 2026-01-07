@@ -19,3 +19,4 @@ tqdm
 requests
 adafruit-blinka
 adafruit-circuitpython-ads1x15
+pillow
