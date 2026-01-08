@@ -12,20 +12,33 @@ except Exception:
 # DEBUG BUTTONS (Laptop / VS Code)
 # ==========================================================
 class DebugButtons:
+    """
+    Debug backend:
+    - Nhấn Enter = 1 lượt nói (giả lập nhấn/thả TALK)
+    - MODE không dùng
+    """
+
     def __init__(self, cfg: Mapping[str, Any]) -> None:
         self._pressed = False
+        self._released = True
 
     # ---------------- TALK ----------------
     def wait_talk_press(self) -> None:
         input("[DEBUG] Press Enter to START talking...")
         self._pressed = True
+        self._released = False
 
     def is_talk_pressed(self) -> bool:
-        # Debug: coi như đang giữ cho tới khi stop_record
-        return self._pressed
+        # Giữ "pressed" trong thời gian ngắn rồi tự thả
+        if self._pressed and not self._released:
+            time.sleep(0.3)
+            self._released = True
+            return True
+        return False
 
     def release(self) -> None:
         self._pressed = False
+        self._released = True
 
     # ---------------- MODE ----------------
     def poll_mode_event(self) -> str | None:

@@ -8,18 +8,30 @@ import soundfile as sf
 import librosa
 
 
-# ================= CONFIG CỨNG (ỔN ĐỊNH TRÊN PI) =================
+# ================= DEFAULT CONFIG =================
 
-INPUT_DEVICE = 1  # USB Audio Device (mic)
-OUTPUT_DEVICE = 1  # USB Audio Device (loa)
+DEFAULT_INPUT_DEVICE = 1
+DEFAULT_OUTPUT_DEVICE = 1
 
 STT_SAMPLE_RATE = 16000
 TTS_SAMPLE_RATE = 44100
+MIN_RECORD_SEC = 0.2  # chống bấm nhầm
 
 
-class DebugAudio:
+class AudioBackend:
+    """
+    Audio backend cho thiết bị dịch
+
+    - Push-to-talk recording
+    - Resample về 16kHz cho STT
+    - Playback cho TTS
+    """
+
     def __init__(self, config: Dict[str, Any]):
         audio_cfg = config.get("AUDIO", {})
+
+        self.input_device = int(audio_cfg.get("INPUT_DEVICE", DEFAULT_INPUT_DEVICE))
+        self.output_device = int(audio_cfg.get("OUTPUT_DEVICE", DEFAULT_OUTPUT_DEVICE))
         self.channels = int(audio_cfg.get("CHANNELS", 1))
 
         self._frames: list[np.ndarray] = []
@@ -32,13 +44,14 @@ class DebugAudio:
         self._wav_path = tmp / "ptt_record.wav"
 
         print(
-            f"[AUDIO] Init | INPUT_DEVICE={INPUT_DEVICE} "
-            f"| STT_SR={STT_SAMPLE_RATE} | TTS_SR={TTS_SAMPLE_RATE}"
+            "[AUDIO] Init | "
+            f"IN_DEV={self.input_device} | OUT_DEV={self.output_device} | "
+            f"STT_SR={STT_SAMPLE_RATE} | TTS_SR={TTS_SAMPLE_RATE}"
         )
 
-    # ================= PUSH TO TALK =================
+    # ================= RECORD =================
 
-    def start_record(self):
+    def start_record(self) -> None:
         self._frames = []
 
         def callback(indata, frames, time_info, status):
@@ -46,9 +59,8 @@ class DebugAudio:
                 print("[AUDIO][WARN]", status)
             self._frames.append(indata.copy())
 
-        # ⚠️ KHÔNG set samplerate → để mic chạy native SR
         self._stream = sd.InputStream(
-            device=INPUT_DEVICE,
+            device=self.input_device,
             channels=self.channels,
             dtype="float32",
             callback=callback,
@@ -72,11 +84,13 @@ class DebugAudio:
 
         audio = np.concatenate(self._frames, axis=0)
 
-        # mono hóa nếu cần
         if audio.ndim > 1:
             audio = audio.mean(axis=1)
 
-        # 🔥 RESAMPLE VỀ 16K CHO STT
+        duration = len(audio) / float(self._orig_sr or 1)
+        if duration < MIN_RECORD_SEC:
+            raise RuntimeError("Recording too short")
+
         audio_16k = librosa.resample(
             audio,
             orig_sr=self._orig_sr,
@@ -88,17 +102,29 @@ class DebugAudio:
 
         return self._wav_path
 
-    # ================= PLAY (TTS) =================
+    # ================= PLAYBACK (TTS) =================
 
-    def play(self, audio: np.ndarray):
+    def play(self, audio: np.ndarray) -> None:
         sd.play(
             audio,
             samplerate=TTS_SAMPLE_RATE,
-            device=OUTPUT_DEVICE,
+            device=self.output_device,
         )
         sd.wait()
 
+    # ================= PIPELINE COMPAT =================
+
+    def speak(self, audio: np.ndarray) -> None:
+        """
+        Alias để tương thích pipeline:
+        pipeline gọi self.audio.speak(...)
+        """
+        self.play(audio)
+
+
+# ================= FACTORY =================
+
 
 def create_audio(config: Dict[str, Any]):
-    print("[AUDIO] Using backend: DebugAudio (fixed)")
-    return DebugAudio(config)
+    print("[AUDIO] Using AudioBackend")
+    return AudioBackend(config)

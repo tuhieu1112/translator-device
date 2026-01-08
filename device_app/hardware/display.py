@@ -14,15 +14,15 @@ class Display:
     - Trạng thái thiết bị (READY / Listening / Translating / Speaking)
     - Mức pin (%)
 
-    Khi chưa gắn OLED / ADS:
-    - Chạy ở chế độ debug
-    - In trạng thái ra terminal
+    Khi chưa gắn OLED:
+    - Chạy debug mode (in terminal)
     """
 
     mode: str = "debug"
 
     def __init__(self, config: dict[str, Any]) -> None:
         self.mode = str(config.get("DISPLAY_MODE", "debug")).lower()
+        self._last_battery: int | None = None
 
     # ================= INTERNAL =================
 
@@ -32,15 +32,11 @@ class Display:
             print(line)
 
     def _map_state(self, state: str | None) -> str:
-        """
-        Map internal pipeline state to user-friendly text
-        """
-        if state is None:
+        if not state:
             return ""
 
         state = state.upper()
         return {
-            "IDLE": "READY",  # tương thích pipeline cũ
             "READY": "READY",
             "RECORDING": "Listening...",
             "TRANSLATING": "Translating...",
@@ -73,25 +69,19 @@ class Display:
 
         # ----- LINE 2: STATUS -----
         status_text = self._map_state(state)
-        if status_text:
-            lines.append(f"STATUS: {status_text}")
-        else:
-            lines.append("")
+        lines.append(f"STATUS: {status_text}" if status_text else "")
 
-        # ----- LINE 3: TEXT / HINT -----
-        lines.append(text if text else "")
+        # ----- LINE 3: TEXT -----
+        lines.append(text or "")
 
         # ----- OUTPUT -----
         if self.mode == "debug":
             self._print_debug(lines)
         else:
-            # TODO: OLED SSD1306 implementation
+            # TODO: SSD1306 OLED backend
             self._print_debug(lines)
 
     def show_mode(self, mode: Any, battery: int | float | None = None) -> None:
-        """
-        Hiển thị trạng thái sẵn sàng ban đầu
-        """
         self.show_status(
             text="Press TALK to speak",
             battery=battery,
@@ -101,10 +91,16 @@ class Display:
 
     def show_battery(self, percent: int | float) -> None:
         """
-        Stub để tương thích pipeline khi chưa gắn OLED / ADS
+        Chỉ dùng cho OLED thật.
+        Debug mode KHÔNG spam log.
         """
+        p = int(percent)
+        if self._last_battery == p:
+            return
+        self._last_battery = p
+
         if self.mode == "debug":
-            print(f"[OLED DEBUG] Battery: {int(percent)}%")
+            print(f"[OLED DEBUG] Battery: {p}%")
 
 
 def create_display(config: dict[str, Any]) -> Display:
