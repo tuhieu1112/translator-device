@@ -1,12 +1,12 @@
-# ==== Backend mode ====
-DISPLAY_MODE: "oled"
-BUTTON_MODE:  "gpio"
-AUDIO_MODE:   "gpio"
-POWER_MODE:   "ads"
+# ================= SYSTEM BACKENDS =================
+DISPLAY_MODE: "oled"        # "oled" hoặc "debug"
+BUTTON_MODE:  "gpio"        # "gpio" (nút vật lý) hoặc "debug"
+AUDIO_MODE:   "alsa"        # "alsa" cho USB soundcard / ALSA
+POWER_MODE:   "ads1015"     # "ads1015" cho ADC I2C (ADS1015/ADS1115)
 
 ARTIFACTS_DIR: "artifacts"
 
-# ===== STT (onnx CTC) =====
+# ================= STT =================
 STT_VI:
   MODEL_PATH: "artifacts/stt_vi/stt_vi_v3.onnx"
   PROCESSOR_DIR: "artifacts/stt_vi/processor"
@@ -15,14 +15,14 @@ STT_EN:
   MODEL_PATH: "artifacts/stt_en/stt_en_v1.onnx"
   PROCESSOR_DIR: "artifacts/stt_en/processor"
 
-# ===== NMT =====
+# ================= NMT =================
 NMT:
   VI_EN:
     MODEL_DIR: "artifacts/nmt_vi_en"
   EN_VI:
     MODEL_DIR: "artifacts/nmt_en_vi"
 
-# ===== TTS =====
+# ================= TTS =================
 TTS:
   EN:
     BACKEND: "piper"
@@ -34,13 +34,32 @@ TTS:
     PIPER_EXE: "piper"
     VOICE: "artifacts/tts_vi/vi_VN-vais1000-medium.onnx"
 
-# ===== Audio =====
+# ================= AUDIO =================
 AUDIO:
   SAMPLE_RATE: 16000
   CHANNELS: 1
   MAX_RECORD_SECONDS: 7
 
-# ===== Buttons =====
+# ================= BUTTON GPIO =================
 BUTTONS:
   TALK_PIN: 23
   MODE_PIN: 24
+  LONG_PRESS_SEC: 5.0
+
+# ================= DISPLAY (OLED) =================
+DISPLAY:
+  TYPE: "ssd1306"
+  WIDTH: 128
+  HEIGHT: 64
+  I2C_BUS: 1
+  I2C_ADDRESS: 0x3C
+
+# ================= POWER (ADS1015) =================
+POWER:
+  ADC: "ads1015"
+  I2C_BUS: 1
+  I2C_ADDRESS: 0x48
+  # Voltage divider: R1 (top), R2 (bottom) in ohms (use actual values)
+  R1: 330000
+  R2: 100000
+  LOW_VOLTAGE: 3.2
