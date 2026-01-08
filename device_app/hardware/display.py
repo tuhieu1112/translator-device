@@ -1,103 +1,76 @@
 from __future__ import annotations
 
 from typing import Any
-from PIL import Image, ImageDraw, ImageFont
-
-import adafruit_ssd1306
-import board
-import busio
+from luma.core.interface.serial import i2c
+from luma.oled.device import ssd1306
+from luma.core.render import canvas
 
 
 class Display:
+    """
+    OLED SSD1306 (128x64)
+
+    Hiển thị DUY NHẤT:
+    - Mode
+    - Status
+    - Battery %
+    """
+
     def __init__(self, config: dict[str, Any]) -> None:
-        display_cfg = config.get("DISPLAY", {})
+        disp_cfg = config.get("DISPLAY", {})
 
-        self.width = int(display_cfg.get("WIDTH", 128))
-        self.height = int(display_cfg.get("HEIGHT", 64))
-        i2c_bus = int(display_cfg.get("I2C_BUS", 1))
-        i2c_addr = int(display_cfg.get("I2C_ADDRESS", 0x3C))
+        self.width = disp_cfg.get("WIDTH", 128)
+        self.height = disp_cfg.get("HEIGHT", 64)
 
-        # I2C
-        i2c = busio.I2C(board.SCL, board.SDA)
-        self.oled = adafruit_ssd1306.SSD1306_I2C(
-            self.width, self.height, i2c, addr=i2c_addr
+        serial = i2c(
+            port=disp_cfg.get("I2C_BUS", 1),
+            address=disp_cfg.get("I2C_ADDRESS", 0x3C),
         )
+        self.device = ssd1306(serial, width=self.width, height=self.height)
 
-        self.oled.fill(0)
-        self.oled.show()
-
-        self.image = Image.new("1", (self.width, self.height))
-        self.draw = ImageDraw.Draw(self.image)
-        self.font = ImageFont.load_default()
-
-        self.last_battery: int | None = None
+        self._last = {"mode": None, "state": None, "battery": None}
 
         print("[DISPLAY] OLED SSD1306 initialized")
 
-    # =========================
-    # INTERNAL
-    # =========================
-    def _clear(self) -> None:
-        self.draw.rectangle((0, 0, self.width, self.height), outline=0, fill=0)
+    # ================= PUBLIC API =================
 
-    def _render(self) -> None:
-        self.oled.image(self.image)
-        self.oled.show()
-
-    # =========================
-    # PUBLIC API (USED BY PIPELINE)
-    # =========================
     def show_mode(self, mode: Any, battery: int | None = None) -> None:
-        self._clear()
-
-        mode_text = getattr(mode, "short_label", str(mode))
-        self.draw.text((0, 0), mode_text, font=self.font, fill=255)
-
-        if battery is not None:
-            self.draw.text((90, 0), f"{battery}%", font=self.font, fill=255)
-
-        self.draw.text((0, 20), "READY", font=self.font, fill=255)
-
-        self._render()
+        self.show_status(
+            mode=mode,
+            state="READY",
+            battery=battery,
+        )
 
     def show_status(
         self,
-        text: str = "",
-        battery: int | None = None,
+        *,
         mode: Any | None = None,
         state: str | None = None,
+        battery: int | float | None = None,
         **_,
     ) -> None:
-        self._clear()
+        mode_name = getattr(mode, "short_label", str(mode)) if mode else "--"
+        state_text = state or "--"
+        bat_text = f"{int(battery)}%" if battery is not None else "--"
 
-        # Line 1: MODE + BAT
-        if mode is not None:
-            mode_text = getattr(mode, "short_label", str(mode))
-            self.draw.text((0, 0), mode_text, font=self.font, fill=255)
-
-        if battery is not None:
-            self.draw.text((90, 0), f"{battery}%", font=self.font, fill=255)
-
-        # Line 2: STATE
-        if state:
-            self.draw.text((0, 20), state, font=self.font, fill=255)
-
-        # Line 3: short hint
-        if text:
-            self.draw.text((0, 40), text[:16], font=self.font, fill=255)
-
-        self._render()
-
-    def show_battery(self, percent: int) -> None:
-        # chỉ update khi battery đổi
-        if self.last_battery == percent:
+        # tránh redraw thừa
+        if (
+            self._last["mode"] == mode_name
+            and self._last["state"] == state_text
+            and self._last["battery"] == bat_text
+        ):
             return
 
-        self.last_battery = percent
-        # redraw nhẹ, không đổi state
-        self._clear()
-        self.draw.text((90, 0), f"{percent}%", font=self.font, fill=255)
-        self._render()
+        self._last.update({"mode": mode_name, "state": state_text, "battery": bat_text})
+
+        with canvas(self.device) as draw:
+            draw.text((0, 0), f"MODE: {mode_name}", fill=255)
+            draw.text((0, 18), f"STATE: {state_text}", fill=255)
+            draw.text((0, 36), f"BAT: {bat_text}", fill=255)
+
+    def show_battery(self, percent: int | float) -> None:
+        # battery luôn được vẽ lại thông qua show_status
+        pass
 
 
 def create_display(config: dict[str, Any]) -> Display:
