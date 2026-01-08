@@ -1,49 +1,69 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
+import board
+import busio
+from PIL import Image, ImageDraw, ImageFont
+import adafruit_ssd1306
 
-@dataclass
+
 class Display:
     """
-    Display backend (debug / OLED-ready)
+    OLED SSD1306 display backend (REAL DEVICE)
 
     Hiển thị:
-    - Chế độ dịch (VI → EN / EN → VI)
-    - Trạng thái thiết bị (READY / Listening / Translating / Speaking)
-    - Mức pin (%)
-
-    Khi chưa gắn OLED:
-    - Chạy debug mode (in terminal)
+    - MODE
+    - STATUS
+    - MESSAGE
+    - BATTERY (%)
     """
-
-    mode: str = "debug"
 
     def __init__(self, config: dict[str, Any]) -> None:
         self.mode = str(config.get("DISPLAY_MODE", "debug")).lower()
         self._last_battery: int | None = None
 
-    # ================= INTERNAL =================
+        if self.mode != "oled":
+            print("[DISPLAY] Running in debug mode")
+            return
 
-    def _print_debug(self, lines: list[str]) -> None:
-        print("[OLED]")
-        for line in lines:
-            print(line)
+        # ---- I2C + OLED INIT ----
+        self.i2c = busio.I2C(board.SCL, board.SDA)
+        self.oled = adafruit_ssd1306.SSD1306_I2C(128, 64, self.i2c, addr=0x3C)
+
+        self.oled.fill(0)
+        self.oled.show()
+
+        self.image = Image.new("1", (128, 64))
+        self.draw = ImageDraw.Draw(self.image)
+        self.font = ImageFont.load_default()
+
+        print("[DISPLAY] OLED SSD1306 initialized")
+
+    # ---------------- INTERNAL ----------------
+
+    def _render(self, lines: list[str]) -> None:
+        self.draw.rectangle((0, 0, 128, 64), outline=0, fill=0)
+
+        y = 0
+        for line in lines[:4]:
+            self.draw.text((0, y), line, font=self.font, fill=255)
+            y += 16
+
+        self.oled.image(self.image)
+        self.oled.show()
 
     def _map_state(self, state: str | None) -> str:
         if not state:
             return ""
-
-        state = state.upper()
         return {
             "READY": "READY",
-            "RECORDING": "Listening...",
-            "TRANSLATING": "Translating...",
-            "SPEAKING": "Speaking...",
-        }.get(state, state)
+            "RECORDING": "Listening",
+            "TRANSLATING": "Translating",
+            "SPEAKING": "Speaking",
+        }.get(state.upper(), state)
 
-    # ================= PUBLIC API =================
+    # ---------------- PUBLIC API ----------------
 
     def show_status(
         self,
@@ -53,54 +73,50 @@ class Display:
         state: str | None = None,
         **kwargs,
     ) -> None:
+        if self.mode != "oled":
+            print("[OLED DEBUG]", text)
+            return
+
         lines: list[str] = []
 
-        # ----- LINE 1: MODE + BATTERY -----
-        if mode is not None:
-            mode_name = getattr(mode, "name", str(mode))
-            header = f"MODE: {mode_name.replace('_', ' → ')}"
+        # Line 1: MODE + BAT
+        if mode:
+            m = getattr(mode, "short_label", mode.name)
+            header = f"{m}"
         else:
-            header = "MODE: ?"
+            header = "MODE"
 
         if battery is not None:
-            header = f"{header:<18} BAT: {int(battery)}%"
+            header = f"{header}  {int(battery)}%"
 
         lines.append(header)
 
-        # ----- LINE 2: STATUS -----
-        status_text = self._map_state(state)
-        lines.append(f"STATUS: {status_text}" if status_text else "")
+        # Line 2: STATUS
+        status = self._map_state(state)
+        lines.append(status)
 
-        # ----- LINE 3: TEXT -----
-        lines.append(text or "")
+        # Line 3-4: TEXT
+        if text:
+            lines.extend(text[:32].split("\n")[:2])
 
-        # ----- OUTPUT -----
-        if self.mode == "debug":
-            self._print_debug(lines)
-        else:
-            # TODO: SSD1306 OLED backend
-            self._print_debug(lines)
+        self._render(lines)
 
     def show_mode(self, mode: Any, battery: int | float | None = None) -> None:
         self.show_status(
-            text="Press TALK to speak",
+            text="Press TALK",
             battery=battery,
             mode=mode,
             state="READY",
         )
 
     def show_battery(self, percent: int | float) -> None:
-        """
-        Chỉ dùng cho OLED thật.
-        Debug mode KHÔNG spam log.
-        """
         p = int(percent)
         if self._last_battery == p:
             return
         self._last_battery = p
 
-        if self.mode == "debug":
-            print(f"[OLED DEBUG] Battery: {p}%")
+        # refresh header only
+        self.show_status(battery=p)
 
 
 def create_display(config: dict[str, Any]) -> Display:

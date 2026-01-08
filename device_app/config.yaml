@@ -1,8 +1,8 @@
 # ==== Backend mode ====
-DISPLAY_MODE: "debug"
-BUTTON_MODE:  "debug"
-AUDIO_MODE:   "debug"
-POWER_MODE:   "debug"
+DISPLAY_MODE: "oled"
+BUTTON_MODE:  "gpio"
+AUDIO_MODE:   "gpio"
+POWER_MODE:   "ads"
 
 ARTIFACTS_DIR: "artifacts"
 
@@ -21,8 +21,6 @@ NMT:
     MODEL_DIR: "artifacts/nmt_vi_en"
   EN_VI:
     MODEL_DIR: "artifacts/nmt_en_vi"
-  # EN_EN:
-  #   MODEL_DIR: "artifacts/nmt_en_en"  # chưa dùng
 
 # ===== TTS =====
 TTS:
@@ -40,7 +38,7 @@ TTS:
 AUDIO:
   SAMPLE_RATE: 16000
   CHANNELS: 1
-  MAX_RECORD_SECONDS: 7  # giữ làm fail-safe
+  MAX_RECORD_SECONDS: 7
 
 # ===== Buttons =====
 BUTTONS:
