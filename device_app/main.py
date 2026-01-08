@@ -9,17 +9,30 @@ from device_app.hardware.buttons import create_buttons
 from device_app.hardware.audio import create_audio
 from device_app.hardware.power import create_power_manager
 
+# (tuỳ giai đoạn DEV / PROD)
+# from device_app.models.stt import create_stt
+# from device_app.models.nmt import create_nmt
+# from device_app.models.tts import create_tts
+
 
 def main() -> None:
     here = Path(__file__).resolve().parent
     config = load_config(here / "config.yaml")
 
+    # ========== HARDWARE ==========
+    display = create_display(config)
+    buttons = create_buttons(config)
+    audio = create_audio(config)
+    power = create_power_manager(config)
+
+    # ========== MODELS ==========
+    # DEV: chưa load model
     pipeline = TranslatorPipeline(
-        config=config,
-        display=create_display(config),
-        buttons=create_buttons(config),
-        audio=create_audio(config),
-        power=create_power_manager(config),
+        display=display,
+        buttons=buttons,
+        audio=audio,
+        power=power,
+        device_env=config.get("DEVICE_ENV", "DEV"),
     )
 
     pipeline.run(start_mode=Mode.VI_EN)
