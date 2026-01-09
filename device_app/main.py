@@ -48,7 +48,7 @@ def main() -> None:
     nlp = NLPProcessorV2(config)
 
     # Skeleton
-    skeleton = SkeletonTranslator(config)
+    skeleton = SkeletonTranslator()
     # ========== PIPELINE ==========
     pipeline = TranslatorPipeline(
         display=display,
