@@ -1,4 +1,10 @@
+from __future__ import annotations
+
+import time
 import uuid
+from pathlib import Path
+from typing import Optional
+
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
@@ -6,36 +12,48 @@ from scipy.signal import resample_poly
 
 
 class create_audio:
+    """
+    Audio flow chuẩn:
+    - Record: 48kHz → downsample 16kHz → STT
+    - TTS: Piper 22050Hz → upsample 48kHz → Speaker
+    """
+
     def __init__(
         self,
-        hw_sr=48000,
-        stt_sr=16000,
-        channels=1,
-        input_device=None,
-        output_device=None,
-    ):
-        self.hw_sr = hw_sr
-        self.stt_sr = stt_sr
-        self.channels = channels
+        *,
+        hw_sr: int = 48000,
+        stt_sr: int = 16000,
+        channels: int = 1,
+        input_device: Optional[int] = None,
+        output_device: Optional[int] = None,
+        tmp_dir: str = "/tmp",
+    ) -> None:
+        self.hw_sr = int(hw_sr)
+        self.stt_sr = int(stt_sr)
+        self.channels = int(channels)
         self.input_device = input_device
         self.output_device = output_device
+        self.tmp_dir = Path(tmp_dir)
 
-        self._frames = []
-        self._stream = None
+        self._stream: Optional[sd.InputStream] = None
+        self._frames: list[np.ndarray] = []
 
         print(
-            f"[AUDIO] Init | HW_SR={hw_sr} | STT_SR={stt_sr} | CH={channels} "
-            f"| IN_DEV={input_device} | OUT_DEV={output_device}"
+            f"[AUDIO] Init | HW_SR={self.hw_sr} | STT_SR={self.stt_sr} "
+            f"| CH={self.channels} | IN_DEV={self.input_device} | OUT_DEV={self.output_device}"
         )
 
-    # ===============================
+    # ==================================================
     # RECORD
-    # ===============================
+    # ==================================================
 
-    def start_record(self):
-        self._frames = []
+    def start_record(self) -> None:
+        if self._stream is not None:
+            raise RuntimeError("Recording already started")
 
-        def callback(indata, frames, time, status):
+        self._frames.clear()
+
+        def callback(indata, frames, time_info, status):
             if status:
                 print("[AUDIO] input status:", status)
             self._frames.append(indata.copy())
@@ -44,67 +62,79 @@ class create_audio:
             samplerate=self.hw_sr,
             channels=self.channels,
             dtype="float32",
-            callback=callback,
             device=self.input_device,
+            callback=callback,
         )
         self._stream.start()
         print("[AUDIO] Recording started")
 
     def stop_record(self) -> str:
+        if self._stream is None:
+            raise RuntimeError("Recording not started")
+
         self._stream.stop()
         self._stream.close()
+        self._stream = None
 
         audio = np.concatenate(self._frames, axis=0).squeeze()
-        print(f"[AUDIO] Frames collected: {len(audio)}")
+        self._frames.clear()
 
-        # ===== RAW SAVE (48k) =====
-        uid = uuid.uuid4().hex[:8]
-        raw_path = f"/tmp/rec_{uid}_48k.wav"
-        sf.write(raw_path, audio, self.hw_sr, subtype="PCM_16")
-        print(f"[AUDIO] RAW saved: {raw_path}")
+        # ---- Sanity check ----
+        if audio.size < self.hw_sr * 0.2:
+            raise RuntimeError("Audio too short")
 
-        # ===== STATS (48k) =====
-        self._log_stats(audio, self.hw_sr, tag="RAW-48k")
+        # ---- Downsample 48k → 16k (STT) ----
+        if self.hw_sr != self.stt_sr:
+            audio = resample_poly(audio, self.stt_sr, self.hw_sr)
 
-        # ===== RESAMPLE → 16k FOR STT =====
-        audio_16k = resample_poly(audio, self.stt_sr, self.hw_sr)
+        # ---- Normalize (soft) ----
+        peak = np.max(np.abs(audio))
+        if peak > 0.99:
+            audio = audio / peak * 0.95
 
-        stt_path = f"/tmp/rec_{uid}_16k.wav"
-        sf.write(stt_path, audio_16k, self.stt_sr, subtype="PCM_16")
-        print(f"[AUDIO] STT WAV saved: {stt_path}")
+        wav_path = self.tmp_dir / f"rec_{uuid.uuid4().hex[:8]}.wav"
+        sf.write(wav_path, audio, self.stt_sr, subtype="PCM_16")
 
-        # ===== STATS (16k) =====
-        self._log_stats(audio_16k, self.stt_sr, tag="STT-16k")
+        print(f"[AUDIO] Saved: {wav_path}")
+        return str(wav_path)
 
-        return stt_path
+    # ==================================================
+    # PLAY (TTS)
+    # ==================================================
 
-    # ===============================
-    # PLAY (FOR TTS)
-    # ===============================
 
-    def play(self, audio: np.ndarray, sr: int):
-        print(f"[AUDIO] Play | SR={sr} | len={len(audio)}")
-        self._log_stats(audio, sr, tag="TTS-OUT")
+def play_tts(self, audio: np.ndarray, sr: int) -> None:
+    """
+    audio: float32 [-1, 1]
+    sr: sample rate của Piper (thường 22050)
+    """
+    if audio.ndim > 1:
+        audio = audio.squeeze()
 
-        sd.play(audio, sr, device=self.output_device)
-        sd.wait()
+    # ---- Resample → HW SR ----
+    if sr != self.hw_sr:
+        audio = resample_poly(audio, self.hw_sr, sr)
 
-    # ===============================
-    # UTILS
-    # ===============================
+    # ---- Safety normalize ----
+    peak = np.max(np.abs(audio))
+    if peak > 0.99:
+        audio = audio / peak * 0.95
+
+    sd.play(audio, self.hw_sr, device=self.output_device)
+    sd.wait()
+
+    # ==================================================
+    # DEBUG / TEST
+    # ==================================================
 
     @staticmethod
-    def _log_stats(audio: np.ndarray, sr: int, tag="AUDIO"):
-        if len(audio) == 0:
-            print(f"[{tag}] EMPTY AUDIO")
-            return
-
-        rms = float(np.sqrt(np.mean(audio**2)))
-        peak = float(np.max(np.abs(audio)))
-        clip = float(np.mean(np.abs(audio) > 0.99))
+    def analyze(audio: np.ndarray, sr: int) -> None:
+        rms = np.sqrt(np.mean(audio**2))
+        peak = np.max(np.abs(audio))
+        clip = np.mean(np.abs(audio) > 0.99)
         dc = float(np.mean(audio))
 
         print(
-            f"[{tag}] SR={sr} | len={len(audio)} | "
-            f"RMS={rms:.4f} | Peak={peak:.3f} | Clip={clip:.4f} | DC={dc:.5f}"
+            f"[AUDIO STATS] SR={sr} | RMS={rms:.4f} | Peak={peak:.3f} "
+            f"| Clip={clip:.4f} | DC={dc:.5f}"
         )
