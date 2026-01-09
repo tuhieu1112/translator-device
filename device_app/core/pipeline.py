@@ -1,3 +1,4 @@
+# device_app/core/pipeline.py
 from __future__ import annotations
 
 import time
@@ -8,22 +9,22 @@ from device_app.core.modes import Mode
 
 class TranslatorPipeline:
     """
-    Central translator pipeline (SAFE VERSION).
+    Fault-tolerant translator pipeline.
 
-    Design goals:
-    - Never block main loop
-    - Hardware failure tolerant
-    - DEV mode friendly
+    - Không bao giờ crash vì phần cứng
+    - Power / Display / Button / Audio đều optional
+    - DEV mode không load model
     """
 
     def __init__(
         self,
         *,
-        config: dict | None = None,
         display: Any,
         buttons: Any,
         audio: Any,
         power: Any,
+        device_env: str = "DEV",
+        # models (giữ nguyên, không động vào)
         stt_en: Any | None = None,
         stt_vi: Any | None = None,
         nmt_en_vi: Any | None = None,
@@ -33,17 +34,12 @@ class TranslatorPipeline:
         nlp_en: Any | None = None,
         nlp_vi: Any | None = None,
         skeleton: Any | None = None,
-        device_env: str = "DEV",
     ) -> None:
-        self.config = config or {}
-
-        # hardware
         self.display = display
         self.buttons = buttons
         self.audio = audio
         self.power = power
 
-        # models (optional in DEV)
         self.stt_en = stt_en
         self.stt_vi = stt_vi
         self.nmt_en_vi = nmt_en_vi
@@ -60,88 +56,110 @@ class TranslatorPipeline:
         self.state: str = "READY"
 
         print("[PIPELINE] Initializing pipeline")
-        if self.device_env == "DEV":
-            print("[PIPELINE] DEV mode: models are mocked / optional")
-        else:
-            assert self.stt_en and self.stt_vi
-            assert self.nmt_en_vi and self.nmt_vi_en
-            assert self.tts_en and self.tts_vi
-            assert self.nlp_en and self.nlp_vi and self.skeleton
-            print("[PIPELINE] All models loaded")
-
+        print("[PIPELINE] Device env:", self.device_env)
         print("[PIPELINE] Ready")
 
-    # ==========================================================
-    # MAIN LOOP (NON-BLOCKING)
-    # ==========================================================
+    # =====================================================
+    # MAIN LOOP (TUYỆT ĐỐI KHÔNG TREO)
+    # =====================================================
 
     def run(self, start_mode: Mode = Mode.VI_EN) -> None:
         self.mode = start_mode
         self.state = "READY"
 
-        try:
-            self.display.show_mode(self.mode)
-        except Exception:
-            pass
+        self._safe_display_mode()
 
-        print("[PIPELINE] Device loop started:", self.mode)
+        print("[PIPELINE] Device loop started. Mode:", self.mode)
 
         while True:
-            # ---------- POWER ----------
-            try:
-                pct = self.power.get_percent()
-                getattr(self.display, "show_battery", lambda *_: None)(pct)
-            except Exception:
-                pass
-
-            try:
-                if self.power.is_low():
-                    self.display.show_status("Pin yếu — tắt máy")
-                    self.power.shutdown()
-                    return
-            except Exception:
-                pass
-
-            # ---------- MODE ----------
-            try:
-                evt = self.buttons.poll_mode_event()
-                if evt == "short":
-                    self._toggle_mode()
-                elif evt == "long":
-                    self.display.show_status("Tắt thiết bị")
-                    self.power.shutdown()
-                    return
-            except Exception:
-                pass
-
-            # ---------- TALK ----------
-            try:
-                if self.buttons.is_talk_pressed():
-                    self._handle_talk_safe()
-            except Exception as e:
-                print("[TALK] error:", e)
+            self._safe_power_check()
+            self._safe_mode_button()
+            self._safe_talk_button()
 
             time.sleep(0.05)
 
-    # ==========================================================
-    # MODE
-    # ==========================================================
+    # =====================================================
+    # SAFE HELPERS (KHÔNG ĐƯỢC CRASH)
+    # =====================================================
 
-    def _toggle_mode(self) -> None:
-        self.mode = Mode.EN_VI if self.mode == Mode.VI_EN else Mode.VI_EN
+    def _safe_display_mode(self) -> None:
         try:
             self.display.show_mode(self.mode)
         except Exception:
             pass
+
+    def _safe_display_status(self, text: str) -> None:
+        try:
+            self.display.show_status(
+                mode=self.mode,
+                state=text,
+                battery=self._safe_battery_percent(),
+            )
+        except Exception:
+            pass
+
+    def _safe_battery_percent(self) -> int | None:
+        try:
+            return self.power.get_percent()
+        except Exception:
+            return None
+
+    # =====================================================
+    # POWER
+    # =====================================================
+
+    def _safe_power_check(self) -> None:
+        try:
+            pct = self.power.get_percent()
+            try:
+                self.display.show_battery(pct)
+            except Exception:
+                pass
+
+            if self.power.is_low():
+                self._safe_display_status("PIN YEU")
+                time.sleep(1)
+                self.power.shutdown()
+        except Exception:
+            # TUYỆT ĐỐI không cho power làm chết pipeline
+            pass
+
+    # =====================================================
+    # MODE BUTTON
+    # =====================================================
+
+    def _safe_mode_button(self) -> None:
+        try:
+            evt = self.buttons.poll_mode_event()
+            if evt == "short":
+                self._toggle_mode()
+            elif evt == "long":
+                self._safe_display_status("TAT MAY")
+                time.sleep(0.5)
+                self.power.shutdown()
+        except Exception:
+            pass
+
+    def _toggle_mode(self) -> None:
+        self.mode = Mode.EN_VI if self.mode == Mode.VI_EN else Mode.VI_EN
+        self._safe_display_mode()
         print("[MODE] Switched to", self.mode)
 
-    # ==========================================================
-    # TALK FLOW (SAFE VERSION)
-    # ==========================================================
+    # =====================================================
+    # TALK FLOW
+    # =====================================================
 
-    def _handle_talk_safe(self) -> None:
+    def _safe_talk_button(self) -> None:
+        try:
+            if self.buttons.is_talk_pressed():
+                self._handle_talk()
+        except Exception:
+            pass
+
+    def _handle_talk(self) -> None:
+        # -------- RECORD --------
         self.state = "RECORDING"
-        self.display.show_status("Đang nghe...", mode=self.mode, state=self.state)
+        self._safe_display_status("DANG NGHE")
 
         try:
             self.audio.start_record()
@@ -150,15 +168,9 @@ class TranslatorPipeline:
             self._back_to_ready()
             return
 
-        start = time.time()
-        MAX_HOLD = 15.0  # anti-freeze watchdog
-
         while True:
             try:
                 if not self.buttons.is_talk_pressed():
-                    break
-                if time.time() - start > MAX_HOLD:
-                    print("[TALK] timeout")
                     break
             except Exception:
                 break
@@ -171,15 +183,17 @@ class TranslatorPipeline:
             self._back_to_ready()
             return
 
-        # ---------- DEV MODE ----------
+        # -------- DEV MODE --------
         if self.device_env == "DEV":
-            self.state = "READY"
-            self.display.show_mode(self.mode)
+            self.state = "SPEAKING"
+            self._safe_display_status("DEV MODE")
+            time.sleep(0.5)
+            self._back_to_ready()
             return
 
-        # ---------- TRANSLATE ----------
+        # -------- TRANSLATE --------
         self.state = "TRANSLATING"
-        self.display.show_status("Đang dịch...", mode=self.mode, state=self.state)
+        self._safe_display_status("DANG DICH")
 
         try:
             text_in = (
@@ -197,36 +211,30 @@ class TranslatorPipeline:
             result = nlp.process(text_in)
         except Exception as e:
             print("[NLP] error:", e)
+            result = {"ok": False, "fallback": ""}
+
+        if not result.get("ok"):
+            self._speak_fallback(result.get("fallback", ""))
             self._back_to_ready()
             return
 
         try:
             if self.mode == Mode.VI_EN:
                 skel, slots = self.skeleton.extract_vi(result["text"])
+                translated = self.nmt_vi_en.translate(skel)
             else:
                 skel, slots = self.skeleton.extract_en(result["text"])
-        except Exception:
-            skel, slots = result["text"], {}
+                translated = self.nmt_en_vi.translate(skel)
 
-        try:
-            translated = (
-                self.nmt_vi_en.translate(skel)
-                if self.mode == Mode.VI_EN
-                else self.nmt_en_vi.translate(skel)
-            )
+            text_out = self.skeleton.compose(translated, slots)
         except Exception as e:
             print("[NMT] error:", e)
             self._back_to_ready()
             return
 
-        try:
-            text_out = self.skeleton.compose(translated, slots)
-        except Exception:
-            text_out = translated
-
-        # ---------- SPEAK ----------
+        # -------- SPEAK --------
         self.state = "SPEAKING"
-        self.display.show_status("Đang phát...", mode=self.mode, state=self.state)
+        self._safe_display_status("DANG PHAT")
 
         try:
             if self.mode == Mode.VI_EN:
@@ -238,13 +246,19 @@ class TranslatorPipeline:
 
         self._back_to_ready()
 
-    # ==========================================================
+    # =====================================================
     # HELPERS
-    # ==========================================================
+    # =====================================================
+
+    def _speak_fallback(self, text: str) -> None:
+        try:
+            if self.mode == Mode.VI_EN:
+                self.tts_vi.speak(text)
+            else:
+                self.tts_en.speak(text)
+        except Exception:
+            pass
 
     def _back_to_ready(self) -> None:
         self.state = "READY"
-        try:
-            self.display.show_mode(self.mode)
-        except Exception:
-            pass
+        self._safe_display_mode()
