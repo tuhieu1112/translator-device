@@ -4,8 +4,7 @@ from device_app.models.piper_tts import PiperTTS
 
 class TTSVi(PiperTTS):
     def __init__(self, config: dict):
-        # PiperTTS KHÔNG nhận tham số
-        super().__init__()
-
-        self.voice = config["TTS"]["VI"]["VOICE"]
-        self.piper_exe = config["TTS"]["VI"]["PIPER_EXE"]
+        super().__init__(
+            model_path=config["TTS"]["VI"]["MODEL_PATH"],
+            piper_exe=config["TTS"]["VI"]["PIPER_EXE"],
+        )
