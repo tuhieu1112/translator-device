@@ -87,14 +87,18 @@ class TranslatorPipeline:
     def _safe_mode_button(self) -> None:
         try:
             evt = self.buttons.poll_mode_event()
+
             if evt == "short":
                 self._toggle_mode()
-            elif evt == "long":
+
+            elif evt and evt.lower() == "long":
                 self.display.show_status(
                     mode=self.mode,
                     state="SHUTDOWN",
                 )
                 self._safe_shutdown()
+                return
+
         except Exception as e:
             print("[BUTTON] mode ignored error:", e)
 

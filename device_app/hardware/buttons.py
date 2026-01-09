@@ -1,129 +1,116 @@
 from __future__ import annotations
-from typing import Any, Mapping
+
 import time
+from typing import Optional
 
 try:
     import RPi.GPIO as GPIO
+
+    _HAS_GPIO = True
 except Exception:
-    GPIO = None
+    _HAS_GPIO = False
 
 
-# ==========================================================
-# DEBUG BUTTONS (Laptop / VS Code)
-# ==========================================================
-class DebugButtons:
-    def __init__(self, cfg: Mapping[str, Any]) -> None:
-        self._pressed = False
-        self._released = True
-
-    def wait_talk_press(self) -> None:
-        input("[DEBUG] Press Enter to START talking...")
-        self._pressed = True
-        self._released = False
-
-    def is_talk_pressed(self) -> bool:
-        if self._pressed and not self._released:
-            time.sleep(0.3)
-            self._released = True
-            return True
-        return False
-
-    def release(self) -> None:
-        self._pressed = False
-        self._released = True
-
-    def poll_mode_event(self) -> str | None:
-        return None
-
-
-# ==========================================================
-# GPIO BUTTONS (Raspberry Pi)
-# ==========================================================
 class GpioButtons:
     """
-    TALK: nhấn giữ để ghi, thả để dừng (pull-up -> pressed == LOW)
-    MODE: short press -> đổi mode, long press (>= LONG_PRESS_SEC) -> shutdown
+    SAFE GPIO button backend for Raspberry Pi
+
+    - TALK: press / release
+    - MODE: short press / long press
     """
 
-    def __init__(self, cfg: Mapping[str, Any]) -> None:
-        if GPIO is None:
-            raise RuntimeError("RPi.GPIO is not available")
+    LONG_PRESS_SEC = 5  # giữ MODE >= 1.2s → shutdown
+    DEBOUNCE_SEC = 0.03
 
-        buttons_cfg = cfg.get("BUTTONS", {})
-        # cho chắc: nếu config đổi thì lấy từ config
-        self.talk_pin = int(buttons_cfg.get("TALK_PIN", 17))
-        self.mode_pin = int(buttons_cfg.get("MODE_PIN", 27))
-        self.long_press_sec = float(buttons_cfg.get("LONG_PRESS_SEC", 5.0))
+    def __init__(self, cfg: dict):
+        btn_cfg = cfg.get("BUTTON", {})
 
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(self.talk_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-        GPIO.setup(self.mode_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        self.talk_pin = int(btn_cfg.get("TALK_GPIO", 17))
+        self.mode_pin = int(btn_cfg.get("MODE_GPIO", 27))
+        self.active_low = btn_cfg.get("ACTIVE_LOW", True)
 
-        self._mode_pressed_at: float | None = None
-        self._mode_long_reported = False
+        self._talk_last = False
+        self._mode_last = False
 
-        # optional: small software debounce
-        self._last_mode_state = GPIO.input(self.mode_pin)
+        self._mode_press_t0: Optional[float] = None
+        self._mode_handled = False
+
+        if _HAS_GPIO:
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(self.talk_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+            GPIO.setup(self.mode_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
         print(f"[BUTTON] GPIO ready (TALK={self.talk_pin}, MODE={self.mode_pin})")
 
-    # ---------------- TALK ----------------
-    def wait_talk_press(self) -> None:
-        # block until pressed (LOW)
-        while GPIO.input(self.talk_pin) == GPIO.HIGH:
-            time.sleep(0.01)
-        # returned on press
+    # ================= LOW LEVEL =================
+
+    def _read(self, pin: int) -> bool:
+        if not _HAS_GPIO:
+            return False
+        v = GPIO.input(pin)
+        return (v == GPIO.LOW) if self.active_low else (v == GPIO.HIGH)
+
+    # ================= TALK =================
 
     def is_talk_pressed(self) -> bool:
-        # non-blocking check
-        return GPIO.input(self.talk_pin) == GPIO.LOW
+        return self._read(self.talk_pin)
 
-    # ---------------- MODE ----------------
-    def poll_mode_event(self) -> str | None:
+    # ================= MODE =================
+
+    def poll_mode_event(self) -> Optional[str]:
         """
-        Call often (loop polling). Returns:
-         - "short" for short press
-         - "long" for long press (single event)
-         - None otherwise
+        Non-blocking poll.
+        Returns:
+            - "short" : short press
+            - "long"  : long press
+            - None
         """
-        state = GPIO.input(self.mode_pin)  # HIGH when released, LOW when pressed
 
-        # pressed edge
-        if state == GPIO.LOW and self._mode_pressed_at is None:
-            self._mode_pressed_at = time.time()
-            self._mode_long_reported = False
-            return None
+        now = time.monotonic()
+        pressed = self._read(self.mode_pin)
 
-        # still pressed -> check long press
-        if state == GPIO.LOW and self._mode_pressed_at is not None:
-            elapsed = time.time() - self._mode_pressed_at
-            if (not self._mode_long_reported) and elapsed >= self.long_press_sec:
-                # report long once
-                self._mode_pressed_at = None
-                self._mode_long_reported = True
+        # ---- edge: pressed ----
+        if pressed and not self._mode_last:
+            self._mode_press_t0 = now
+            self._mode_handled = False
+
+        # ---- holding ----
+        if pressed and self._mode_press_t0 and not self._mode_handled:
+            if now - self._mode_press_t0 >= self.LONG_PRESS_SEC:
+                self._mode_handled = True
                 return "long"
-            return None
 
-        # released after being pressed
-        if state == GPIO.HIGH and self._mode_pressed_at is not None:
-            duration = time.time() - self._mode_pressed_at
-            self._mode_pressed_at = None
-            self._mode_long_reported = False
-            if duration < self.long_press_sec:
+        # ---- edge: released ----
+        if not pressed and self._mode_last:
+            if (
+                self._mode_press_t0
+                and not self._mode_handled
+                and (now - self._mode_press_t0) >= self.DEBOUNCE_SEC
+            ):
                 return "short"
-            # if duration >= long_press_sec, long already handled above
-            return None
 
+            self._mode_press_t0 = None
+            self._mode_handled = False
+
+        self._mode_last = pressed
         return None
 
 
-# ==========================================================
-# FACTORY
-# ==========================================================
-def create_buttons(cfg: Mapping[str, Any]):
-    mode = str(cfg.get("BUTTON_MODE", "debug")).lower()
+# ================= FACTORY =================
+
+
+class DebugButtons:
+    def poll_mode_event(self):
+        return None
+
+    def is_talk_pressed(self):
+        return False
+
+
+def create_buttons(cfg: dict):
+    mode = str(cfg.get("BUTTON_MODE", "gpio")).lower()
     if mode == "gpio":
         print("[BUTTON] Using GPIO backend")
         return GpioButtons(cfg)
-    print("[BUTTON] Using Debug backend")
-    return DebugButtons(cfg)
+    print("[BUTTON] Using DEBUG backend")
+    return DebugButtons()
