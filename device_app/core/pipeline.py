@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import time
+import soundfile as sf
+import numpy as np
+from scipy.signal import resample_poly
 from typing import Any
 
 from device_app.core.modes import Mode
@@ -38,7 +41,7 @@ class TranslatorPipeline:
         self.state: str = "READY"
 
         self._running = True
-        self._talk_pressed_prev = False  # EDGE detect
+        self._talk_pressed_prev = False
 
         print("[PIPELINE] Initializing pipeline")
         print(f"[PIPELINE] Device env = {self.device_env}")
@@ -103,6 +106,7 @@ class TranslatorPipeline:
                     state="SHUTDOWN",
                 )
                 self._request_shutdown()
+
         except Exception as e:
             print("[BUTTON] mode ignored:", e)
 
@@ -118,19 +122,17 @@ class TranslatorPipeline:
             pass
 
     # ==================================================
-    # TALK BUTTON (EDGE + HOLD)
+    # TALK BUTTON
     # ==================================================
 
     def _safe_talk_button(self) -> None:
         try:
             pressed = self.buttons.is_talk_pressed()
 
-            # ---- PRESS EDGE → START RECORD ----
             if pressed and not self._talk_pressed_prev and self.state == "READY":
                 self._talk_pressed_prev = True
                 self._handle_talk_start()
 
-            # ---- RELEASE EDGE → STOP RECORD ----
             elif not pressed and self._talk_pressed_prev and self.state == "RECORDING":
                 self._talk_pressed_prev = False
                 self._handle_talk_stop()
@@ -169,7 +171,6 @@ class TranslatorPipeline:
         print(f"[AUDIO] WAV saved: {wav_path}")
 
         if self.device_env == "DEV":
-            print("[DEV] Skip translate")
             self._back_to_ready()
             return
 
@@ -178,16 +179,26 @@ class TranslatorPipeline:
             self.state = "TRANSLATING"
             self.display.show_status(mode=self.mode, state="TRANSLATING")
 
+            # -------- LOAD + NORMALIZE AUDIO FOR STT --------
+            audio, sr = sf.read(wav_path, dtype="float32")
+
+            if audio.ndim > 1:
+                audio = audio.mean(axis=1)
+
+            if sr != 16000:
+                audio = resample_poly(audio, 16000, sr)
+                sr = 16000
+
+            stt_wav = wav_path.replace(".wav", "_stt.wav")
+            sf.write(stt_wav, audio, sr)
+
             # -------- STT --------
             if self.mode == Mode.VI_EN:
-                print("[STT] Using VI")
-                text_in = self.stt_vi.transcribe_file(wav_path)
+                text_in = self.stt_vi.transcribe_file(stt_wav)
             else:
-                print("[STT] Using EN")
-                text_in = self.stt_en.transcribe_file(wav_path)
+                text_in = self.stt_en.transcribe_file(stt_wav)
 
-            print(f"[STT] Text in: '{text_in}'")
-
+            print("[STT] Text in:", repr(text_in))
             # -------- NLP --------
             nlp = self.nlp_vi if self.mode == Mode.VI_EN else self.nlp_en
             result = nlp.process(text_in)
@@ -202,32 +213,33 @@ class TranslatorPipeline:
             # -------- NMT + TTS --------
             if self.mode == Mode.VI_EN:
                 skel, slots = self.skeleton.extract_vi(result["text"])
-                print("[SKELETON] VI:", skel, slots)
-
                 translated = self.nmt_vi_en.translate(skel)
-                print("[NMT] VI→EN:", translated)
-
                 text_out = self.skeleton.compose(translated, slots)
-                print("[FINAL EN]:", text_out)
-
-                self.tts_en.speak(text_out)
-
+                self._tts_play(self.tts_en, text_out)
             else:
                 skel, slots = self.skeleton.extract_en(result["text"])
-                print("[SKELETON] EN:", skel, slots)
-
                 translated = self.nmt_en_vi.translate(skel)
-                print("[NMT] EN→VI:", translated)
-
                 text_out = self.skeleton.compose(translated, slots)
-                print("[FINAL VI]:", text_out)
-
-                self.tts_vi.speak(text_out)
+                self._tts_play(self.tts_vi, text_out)
 
         except Exception as e:
             print("[PIPELINE] talk flow error:", e)
 
         self._back_to_ready()
+
+    # ==================================================
+    # TTS SAFE PLAY
+    # ==================================================
+
+    def _tts_play(self, tts, text: str) -> None:
+        wav_path = tts.synthesize_to_file(text)
+
+        audio, sr = sf.read(wav_path, dtype="float32")
+        if sr != 48000:
+            audio = resample_poly(audio, 48000, sr)
+            sr = 48000
+
+        self.audio.play_array(audio, sr)
 
     # ==================================================
     # FALLBACK
@@ -236,9 +248,9 @@ class TranslatorPipeline:
     def _speak_fallback(self, text: str) -> None:
         try:
             if self.mode == Mode.VI_EN:
-                self.tts_vi.speak(text)
+                self._tts_play(self.tts_vi, text)
             else:
-                self.tts_en.speak(text)
+                self._tts_play(self.tts_en, text)
         except Exception:
             pass
 
