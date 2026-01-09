@@ -41,8 +41,8 @@ AUDIO:
   SAMPLE_RATE: 48000
   STT_RATE: 16000
   CHANNELS: 1
-  INPUT_DEVICE: "plughw:2,0"
-  OUTPUT_DEVICE: "plughw:2,0"
+  INPUT_DEVICE: 0
+  OUTPUT_DEVICE: 0
 
 # ================= BUTTON GPIO =================
 BUTTONS:

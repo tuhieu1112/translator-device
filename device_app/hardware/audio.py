@@ -10,15 +10,19 @@ import soundfile as sf
 from scipy.signal import resample_poly
 
 
+# ============================================================
+# AUDIO BACKEND (sounddevice / PortAudio)
+# ============================================================
+
+
 class AudioBackend:
     """
-    SAFE Audio backend for Raspberry Pi + USB soundcard
+    SAFE Audio backend for Raspberry Pi / Linux + USB soundcard
 
-    Design:
-    - Record at hardware sample rate (usually 44100 / 48000)
-    - Resample to STT sample rate (16k)
-    - No librosa
-    - No numba
+    Rules:
+    - sounddevice ONLY accepts device index (int)
+    - Record at hardware sample rate (usually 48000)
+    - Resample to STT rate (16000)
     - Never crash pipeline
     """
 
@@ -28,7 +32,7 @@ class AudioBackend:
         # STT expects 16k
         self.stt_rate: int = int(audio_cfg.get("STT_RATE", 16000))
 
-        # Hardware rate (USB mic thường là 48000)
+        # Hardware rate (USB mic thường 48000)
         self.hw_rate: int = int(audio_cfg.get("SAMPLE_RATE", 48000))
 
         self.channels: int = int(audio_cfg.get("CHANNELS", 1))
@@ -37,6 +41,10 @@ class AudioBackend:
         self.input_device = audio_cfg.get("INPUT_DEVICE", None)
         self.output_device = audio_cfg.get("OUTPUT_DEVICE", None)
 
+        # ---------- VALIDATE DEVICE ----------
+        self.input_device = self._validate_device(self.input_device, kind="input")
+        self.output_device = self._validate_device(self.output_device, kind="output")
+
         self._buffer: Optional[np.ndarray] = None
         self._record_t0: Optional[float] = None
 
@@ -44,6 +52,45 @@ class AudioBackend:
             f"[AUDIO] Init | HW_SR={self.hw_rate} | STT_SR={self.stt_rate} | "
             f"CH={self.channels} | IN_DEV={self.input_device} | OUT_DEV={self.output_device}"
         )
+
+    # ==================================================
+    # DEVICE VALIDATION
+    # ==================================================
+
+    def _validate_device(self, dev, kind: str) -> Optional[int]:
+        """
+        sounddevice ONLY accepts:
+        - None
+        - device index (int)
+        """
+        if dev is None:
+            return None
+
+        # ❌ ALSA string is NOT supported
+        if isinstance(dev, str):
+            raise ValueError(
+                f"[AUDIO] sounddevice backend does NOT support '{dev}' "
+                f"(use numeric device index from sd.query_devices())"
+            )
+
+        # ✅ int index
+        try:
+            dev = int(dev)
+        except Exception:
+            raise ValueError(f"[AUDIO] Invalid {kind} device: {dev}")
+
+        devices = sd.query_devices()
+        if dev < 0 or dev >= len(devices):
+            raise ValueError(f"[AUDIO] {kind} device index out of range: {dev}")
+
+        info = devices[dev]
+        if kind == "input" and info["max_input_channels"] < 1:
+            raise ValueError(f"[AUDIO] Device {dev} has no input channels")
+
+        if kind == "output" and info["max_output_channels"] < 1:
+            raise ValueError(f"[AUDIO] Device {dev} has no output channels")
+
+        return dev
 
     # ==================================================
     # RECORD
@@ -56,7 +103,7 @@ class AudioBackend:
 
         try:
             self._buffer = sd.rec(
-                int(self.max_seconds * self.hw_rate),
+                frames=int(self.max_seconds * self.hw_rate),
                 samplerate=self.hw_rate,
                 channels=self.channels,
                 dtype="int16",
@@ -82,9 +129,7 @@ class AudioBackend:
 
         duration = time.monotonic() - (self._record_t0 or time.monotonic())
 
-        # quá ngắn → bỏ
         if duration < 0.3:
-            print("[AUDIO] stop_record: too short")
             raise RuntimeError("recording too short")
 
         audio = np.asarray(self._buffer).squeeze()
@@ -92,13 +137,16 @@ class AudioBackend:
         if audio.size == 0:
             raise RuntimeError("stop_record: no frames")
 
-        # ---- resample về 16k cho STT ----
+        # ---------- RESAMPLE TO STT RATE ----------
         if self.hw_rate != self.stt_rate:
             audio = resample_poly(audio, self.stt_rate, self.hw_rate)
 
-        # ---- save temp wav ----
+        # ---------- SAVE TEMP WAV ----------
         tmp = tempfile.NamedTemporaryFile(
-            suffix=".wav", delete=False, prefix="rec_", dir="/tmp"
+            suffix=".wav",
+            delete=False,
+            prefix="rec_",
+            dir="/tmp",
         )
         sf.write(tmp.name, audio, self.stt_rate)
         tmp.close()
@@ -120,7 +168,9 @@ class AudioBackend:
             print("[AUDIO] play failed:", e)
 
 
-# ================= FACTORY =================
+# ============================================================
+# DEBUG BACKEND
+# ============================================================
 
 
 class DebugAudio:
@@ -132,6 +182,11 @@ class DebugAudio:
 
     def play_wav(self, wav_path: str):
         print("[AUDIO][DEBUG] play", wav_path)
+
+
+# ============================================================
+# FACTORY
+# ============================================================
 
 
 def create_audio(cfg: dict):
