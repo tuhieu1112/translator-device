@@ -1,19 +1,20 @@
 # device_app/hardware/power.py
 from __future__ import annotations
-import threading
+
 import time
 from typing import Optional
 
 
-# ==========================================================
-# Dummy fallback (LUÔN CHẠY ĐƯỢC)
-# ==========================================================
+# ============================================================
+# DUMMY POWER (fallback – luôn hoạt động)
+# ============================================================
 class DummyPowerManager:
     def __init__(self):
+        self._percent = None
         print("[POWER] DummyPowerManager active")
 
     def get_percent(self) -> Optional[int]:
-        return None
+        return self._percent
 
     def is_low(self) -> bool:
         return False
@@ -22,101 +23,98 @@ class DummyPowerManager:
         return False
 
     def shutdown(self):
-        print("[POWER] Shutdown requested (dummy ignored)")
+        print("[POWER] Shutdown requested (dummy – ignored)")
 
 
-# ==========================================================
-# Real PowerManager (ADS1015 – KHÔNG BLOCK)
-# ==========================================================
+# ============================================================
+# REAL POWER MANAGER (ADS1015)
+# ============================================================
 class PowerManager:
-    def __init__(self, config: dict):
-        self._ok = False
+    def __init__(self, cfg: dict):
+        # -------- CONFIG --------
+        self.r1 = float(cfg.get("R1", 33000))
+        self.r2 = float(cfg.get("R2", 100000))
+        self.min_v = float(cfg.get("MIN_V", 3.2))
+        self.max_v = float(cfg.get("MAX_V", 4.2))
+
+        addr_raw = cfg.get("I2C_ADDRESS", "0x48")
+        self.address = int(str(addr_raw), 16)
+
         self._last_percent: Optional[int] = None
 
-        # divider
-        self.r1 = float(config.get("R1", 33000))
-        self.r2 = float(config.get("R2", 100000))
+        # -------- SAFE IMPORT --------
+        try:
+            import board
+            import busio
+            from adafruit_ads1x15.ads1015 import ADS1015
+            from adafruit_ads1x15.analog_in import AnalogIn
+        except Exception as e:
+            raise RuntimeError(f"ADS1015 import failed: {e}")
 
-        self.min_v = float(config.get("MIN_V", 3.2))
-        self.max_v = float(config.get("MAX_V", 4.2))
+        # -------- SAFE I2C INIT (NON-BLOCKING) --------
+        try:
+            self.i2c = busio.I2C(board.SCL, board.SDA)
+            t0 = time.time()
+            while not self.i2c.try_lock():
+                if time.time() - t0 > 1.0:
+                    raise TimeoutError("I2C lock timeout")
+                time.sleep(0.01)
 
-        self._chan = None
+            self.ads = ADS1015(self.i2c, address=self.address)
+            self.chan = AnalogIn(self.ads, 0)  # A0
+            self.i2c.unlock()
 
-        # ---- init ADS trong thread riêng ----
-        def _init_ads():
-            try:
-                import board
-                import busio
-                from adafruit_ads1x15.ads1015 import ADS1015
-                from adafruit_ads1x15.analog_in import AnalogIn
+        except Exception as e:
+            raise RuntimeError(f"ADS1015 init failed: {e}")
 
-                address = int(str(config.get("I2C_ADDRESS", "0x48")), 16)
+        print("[POWER] ADS1015 initialized")
 
-                i2c = busio.I2C(board.SCL, board.SDA)
-                ads = ADS1015(i2c, address=address)
-                self._chan = AnalogIn(ads, 0)  # A0
-
-                self._ok = True
-                print("[POWER] ADS1015 initialized")
-
-            except Exception as e:
-                print("[POWER] Init failed:", e)
-
-        t = threading.Thread(target=_init_ads, daemon=True)
-        t.start()
-        t.join(timeout=1.5)
-
-        if not self._ok:
-            raise RuntimeError("ADS1015 not available")
-
-    # --------------------------------------------------
+    # ---------------- INTERNAL ----------------
     def _read_vbat(self) -> float:
-        if not self._chan:
-            raise RuntimeError("ADC not ready")
-
-        v_adc = self._chan.voltage
+        v_adc = float(self.chan.voltage)
         return v_adc * (self.r1 + self.r2) / self.r2
 
-    # --------------------------------------------------
+    # ---------------- PUBLIC API ----------------
     def get_percent(self) -> Optional[int]:
         try:
-            vbat = self._read_vbat()
-            pct = int(100 * (vbat - self.min_v) / (self.max_v - self.min_v))
+            v = self._read_vbat()
+            pct = int(100 * (v - self.min_v) / (self.max_v - self.min_v))
             pct = max(0, min(100, pct))
             self._last_percent = pct
             return pct
-        except Exception:
+        except Exception as e:
+            print("[POWER] Read error:", e)
             return self._last_percent
 
-    # --------------------------------------------------
     def is_low(self) -> bool:
         try:
             return self._read_vbat() < 3.3
         except Exception:
             return False
 
-    # --------------------------------------------------
-def should_shutdown(self) -> bool:
+    def should_shutdown(self) -> bool:
         try:
             return self._read_vbat() < 3.1
         except Exception:
             return False
 
-    # --------------------------------------------------
     def shutdown(self):
         print("[POWER] Shutdown requested")
-        import os
-        os.system("sudo shutdown now")
+        try:
+            import os
+
+            os.system("sudo shutdown now")
+        except Exception as e:
+            print("[POWER] Shutdown failed:", e)
 
 
-# ==========================================================
-# FACTORY (KHÔNG BAO GIỜ LÀM TREO HỆ THỐNG)
-# ==========================================================
+# ============================================================
+# FACTORY (KHÔNG BAO GIỜ FAIL)
+# ============================================================
 def create_power_manager(cfg: dict):
-    power_cfg = cfg.get("POWER", cfg)
-
     try:
+        power_cfg = cfg.get("POWER", cfg)
         return PowerManager(power_cfg)
     except Exception as e:
-        print("[POWER] Fallback to DummyPowerManager:", e)
+        print("[POWER] Init failed → Dummy fallback:", e)
         return DummyPowerManager()
