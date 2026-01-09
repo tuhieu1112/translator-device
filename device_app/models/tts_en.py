@@ -5,6 +5,7 @@ from device_app.models.piper_tts import PiperTTS
 class TTSEn(PiperTTS):
     def __init__(self, config: dict):
         super().__init__(
-            model_path=config["TTS"]["EN"]["MODEL_PATH"],
+            model=config["TTS"]["EN"]["MODEL_PATH"],
+            voice=None,
             piper_exe=config["TTS"]["EN"]["PIPER_EXE"],
         )
