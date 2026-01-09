@@ -19,9 +19,8 @@ from device_app.models.nmt_vi_en import NMTViEn
 from device_app.models.nmt_en_vi import NMTEnVi
 from device_app.models.tts_vi import TTSVi
 from device_app.models.tts_en import TTSEn
-from device_app.models.nlp.vi import NLPVi
-from device_app.models.nlp.en import NLPEng
-from device_app.models.skeleton_translation import SkeletonTranslator
+from device_app.models.nlp.nlp_processor import NLPProcessor
+from device_app.models.nlp.skeleton_translation import SkeletonTranslation
 
 
 def main() -> None:
@@ -35,6 +34,7 @@ def main() -> None:
     power = create_power_manager(config)
 
     # ========== MODELS ==========
+    # ========== MODELS ==========
     stt_vi = STTVi(config)
     stt_en = STTEn(config)
 
@@ -44,11 +44,11 @@ def main() -> None:
     tts_vi = TTSVi(config)
     tts_en = TTSEn(config)
 
-    nlp_vi = NLPVi(config)
-    nlp_en = NLPEng(config)
+    # NLP: dùng chung 1 instance cho cả VI & EN
+    nlp = NLPProcessor(config)
 
-    skeleton = SkeletonTranslator(config)
-
+    # Skeleton
+    skeleton = SkeletonTranslation(config)
     # ========== PIPELINE ==========
     pipeline = TranslatorPipeline(
         display=display,
@@ -62,8 +62,8 @@ def main() -> None:
         nmt_en_vi=nmt_en_vi,
         tts_vi=tts_vi,
         tts_en=tts_en,
-        nlp_vi=nlp_vi,
-        nlp_en=nlp_en,
+        nlp_vi=nlp,
+        nlp_en=nlp,
         skeleton=skeleton,
     )
 
