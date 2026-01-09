@@ -22,7 +22,7 @@ class TranslatorPipeline:
         self.audio = audio
         self.power = power
 
-        # models (GIỮ NGUYÊN)
+        # ===== MODELS (GIỮ NGUYÊN) =====
         self.stt_en = models.get("stt_en")
         self.stt_vi = models.get("stt_vi")
         self.nmt_en_vi = models.get("nmt_en_vi")
@@ -37,6 +37,9 @@ class TranslatorPipeline:
         self.mode: Mode = Mode.VI_EN
         self.state: str = "READY"
 
+        self._running = True
+        self._talk_handled = False  # edge-trigger TALK
+
         print("[PIPELINE] Initializing pipeline")
         print(f"[PIPELINE] Device env = {self.device_env}")
         print("[PIPELINE] Ready")
@@ -48,19 +51,19 @@ class TranslatorPipeline:
     def run(self, start_mode: Mode = Mode.VI_EN) -> None:
         self.mode = start_mode
         self.state = "READY"
+        self._running = True
 
         self._safe_display_mode()
-
         print("[PIPELINE] Device loop started:", self.mode)
 
-        while True:
+        while self._running:
             self._safe_power_tick()
             self._safe_mode_button()
             self._safe_talk_button()
             time.sleep(0.05)
 
     # ==================================================
-    # SAFE WRAPPERS
+    # SAFE POWER
     # ==================================================
 
     def _safe_power_tick(self) -> None:
@@ -78,34 +81,53 @@ class TranslatorPipeline:
                     state="LOW BAT",
                     battery=pct,
                 )
-                self._safe_shutdown()
+                self._request_shutdown()
 
         except Exception as e:
-            # TUYỆT ĐỐI KHÔNG crash
             print("[POWER] ignored error:", e)
+
+    # ==================================================
+    # MODE BUTTON (short / long + countdown)
+    # ==================================================
 
     def _safe_mode_button(self) -> None:
         try:
             evt = self.buttons.poll_mode_event()
 
-            if evt == "short":
+            if evt == "short" and self.state == "READY":
                 self._toggle_mode()
 
-            elif evt and evt.lower() == "long":
-                self.display.show_status(
-                    mode=self.mode,
-                    state="SHUTDOWN",
-                )
-                self._safe_shutdown()
-                return
+            elif evt == "long":
+                self._shutdown_countdown()
 
         except Exception as e:
             print("[BUTTON] mode ignored error:", e)
 
+    def _shutdown_countdown(self) -> None:
+        for sec in range(5, 0, -1):
+            self.display.show_status(
+                mode=self.mode,
+                state=f"SHUTDOWN {sec}",
+            )
+            time.sleep(1)
+
+        self._request_shutdown()
+
+    # ==================================================
+    # TALK BUTTON (EDGE TRIGGER)
+    # ==================================================
+
     def _safe_talk_button(self) -> None:
         try:
-            if self.buttons.is_talk_pressed():
+            pressed = self.buttons.is_talk_pressed()
+
+            if pressed and not self._talk_handled and self.state == "READY":
+                self._talk_handled = True
                 self._safe_handle_talk()
+
+            if not pressed:
+                self._talk_handled = False
+
         except Exception as e:
             print("[BUTTON] talk ignored error:", e)
 
@@ -125,7 +147,7 @@ class TranslatorPipeline:
             pass
 
     # ==================================================
-    # TALK FLOW (AN TOÀN)
+    # TALK FLOW
     # ==================================================
 
     def _safe_handle_talk(self) -> None:
@@ -141,13 +163,7 @@ class TranslatorPipeline:
             self._back_to_ready()
             return
 
-        # chờ nhả nút
-        while True:
-            try:
-                if not self.buttons.is_talk_pressed():
-                    break
-            except Exception:
-                break
+        while self.buttons.is_talk_pressed():
             time.sleep(0.02)
 
         try:
@@ -157,13 +173,11 @@ class TranslatorPipeline:
             self._back_to_ready()
             return
 
-        # DEV: không chạy model
         if self.device_env == "DEV":
-            self.display.show_status(mode=self.mode, state="READY")
             print("[DEV] Talk done")
+            self._back_to_ready()
             return
 
-        # ================== LOGIC DỊCH (GIỮ NGUYÊN) ==================
         try:
             self.state = "TRANSLATING"
             self.display.show_status(mode=self.mode, state="TRANSLATING")
@@ -211,9 +225,10 @@ class TranslatorPipeline:
     # SHUTDOWN
     # ==================================================
 
-    def _safe_shutdown(self) -> None:
+    def _request_shutdown(self) -> None:
+        print("[SYSTEM] Shutdown requested")
+        self._running = False
         try:
-            print("[SYSTEM] Shutdown requested")
             self.power.shutdown()
         except Exception as e:
             print("[SYSTEM] shutdown failed:", e)
