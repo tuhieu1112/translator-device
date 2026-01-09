@@ -1,9 +1,9 @@
 # device_app/main.py
 from pathlib import Path
 
+# ===== CORE =====
 from device_app.core.modes import Mode
 from device_app.core.pipeline import TranslatorPipeline
-
 from device_app.utils.config import load_config
 
 # ===== HARDWARE =====
