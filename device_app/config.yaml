@@ -39,8 +39,8 @@ AUDIO:
   SAMPLE_RATE: 16000
   CHANNELS: 1
   MAX_RECORD_SECONDS: 10
-  INPUT_DEVICE: 0
-  OUTPUT_DEVICE: 0
+  INPUT_DEVICE: "plughw:CARD=Audio,DEV=0"
+  OUTPUT_DEVICE: "plughw:CARD=Audio,DEV=0"
 
 # ================= BUTTON GPIO =================
 BUTTONS:
