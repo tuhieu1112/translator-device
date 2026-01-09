@@ -196,15 +196,27 @@ class TranslatorPipeline:
 
             # -------- NMT + TTS --------
             if self.mode == Mode.VI_EN:
+                # ===== VI -> EN (GIỮ skeleton) =====
                 skel, slots = self.skeleton.extract_vi(result["text"])
+                print("[SKELETON][VI] skel =", skel)
+                print("[SKELETON][VI] slots =", slots)
+
                 translated = self.nmt_vi_en.translate(skel)
+                print("[NMT][VI->EN] input :", skel)
+                print("[NMT][VI->EN] output:", translated)
                 text_out = self.skeleton.compose(translated, slots)
-                self.tts_en.speak(text_out)
+                print("[FINAL][EN]:", text_out)
+                self._tts_play(self.tts_en, text_out)
+
             else:
-                skel, slots = self.skeleton.extract_en(result["text"])
-                translated = self.nmt_en_vi.translate(skel)
-                text_out = self.skeleton.compose(translated, slots)
-                self.tts_vi.speak(text_out)
+                # ===== EN -> VI (BỎ skeleton HOÀN TOÀN) =====
+                src_text = result["text"]
+                print("[NMT][EN->VI] input :", src_text)
+
+                translated = self.nmt_en_vi.translate(src_text)
+                print("[NMT][EN->VI] output:", translated)
+
+                self._tts_play(self.tts_vi, translated)
 
         except Exception as e:
             print("[PIPELINE] talk flow error:", e)
