@@ -19,8 +19,8 @@ from device_app.models.nmt_vi_en import NMTViEn
 from device_app.models.nmt_en_vi import NMTEnVi
 from device_app.models.tts_vi import TTSVi
 from device_app.models.tts_en import TTSEn
-from device_app.models.nlp.nlp_processor import NLPProcessor
-from device_app.models.nlp.skeleton_translation import SkeletonTranslation
+from device_app.models.nlp.nlp_processor import NLPProcessorV2
+from device_app.models.nlp.skeleton_translation import SkeletonTranslator
 
 
 def main() -> None:
@@ -45,10 +45,10 @@ def main() -> None:
     tts_en = TTSEn(config)
 
     # NLP: dùng chung 1 instance cho cả VI & EN
-    nlp = NLPProcessor(config)
+    nlp = NLPProcessorV2(config)
 
     # Skeleton
-    skeleton = SkeletonTranslation(config)
+    skeleton = SkeletonTranslator(config)
     # ========== PIPELINE ==========
     pipeline = TranslatorPipeline(
         display=display,
