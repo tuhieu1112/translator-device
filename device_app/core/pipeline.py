@@ -227,7 +227,7 @@ class TranslatorPipeline:
                 text_out = self.skeleton.compose(translated, safe_slots)
                 print("[FINAL][EN]:", text_out)
 
-                self.tts_en.speak(self.tts_en, text_out)
+                self.tts_en.speak(text_out)
 
             else:
                 # ===== EN -> VI (BỎ skeleton HOÀN TOÀN) =====
@@ -237,7 +237,7 @@ class TranslatorPipeline:
                 translated = self.nmt_en_vi.translate(src_text)
                 print("[NMT][EN->VI] output:", translated)
 
-                self.tts_vi.speak(self.tts_vi, translated)
+                self.tts_vi.speak(translated)
 
         except Exception as e:
             print("[PIPELINE] talk flow error:", e)
