@@ -30,7 +30,7 @@ def main() -> None:
     # ========== HARDWARE ==========
     display = create_display(config)
     buttons = create_buttons(config)
-    audio = create_audio(config)
+    audio = create_audio()
     power = create_power_manager(config)
 
     # ========== MODELS ==========
