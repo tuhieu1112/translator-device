@@ -1,114 +1,61 @@
+# device_app/hardware/power.py
 from __future__ import annotations
-import os
+
 import time
+import board
+import busio
+from adafruit_ads1x15.ads1015 import ADS1015
+from adafruit_ads1x15.analog_in import AnalogIn
 
 
 class PowerManager:
-    """
-    Power manager for battery-powered device (Li-Po 3.7V)
+    def __init__(self, config: dict):
+        self.r1 = float(config.get("R1", 33000))
+        self.r2 = float(config.get("R2", 100000))
+        self.min_v = 3.2
+        self.max_v = 4.2
 
-    - Read battery voltage from TP4056 OUT+ via ADS1015
-    - Convert voltage to battery percentage (UI only)
-    - Safe shutdown when battery is critically low
-    """
+        i2c_bus = int(config.get("I2C_BUS", 1))
+        address = int(str(config.get("I2C_ADDRESS", "0x48")), 16)
 
-    # ===== Li-Po characteristics =====
-    V_FULL = 4.20  # 100%
-    V_EMPTY = 3.30  # 0%  (safe lower bound)
-    V_LOW = 3.50  # warning
-    V_SHUTDOWN = 3.30  # MUST shutdown
+        self.i2c = busio.I2C(board.SCL, board.SDA)
+        self.ads = ADS1015(self.i2c, address=address)
+        self.chan = AnalogIn(self.ads, 0)  # A0
 
-    def __init__(
-        self,
-        channel: int = 0,  # ADS A0
-        r1: int = 330_000,  # divider upper resistor
-        r2: int = 100_000,  # divider lower resistor
-    ) -> None:
-        self.available = False
-        self.ratio = (r1 + r2) / r2  # = 4.3
+        self._last_percent = None
 
-        try:
-            import board
-            import busio
-            import adafruit_ads1x15.ads1015 as ADS
-            from adafruit_ads1x15.analog_in import AnalogIn
+        print("[POWER] ADS1015 initialized")
 
-            i2c = busio.I2C(board.SCL, board.SDA)
-            ads = ADS.ADS1015(i2c, address=0x48)
-            ads.gain = 1
-
-            # ADS1015 channel by index (0 = A0)
-            self.chan = AnalogIn(ads, channel)
-
-            self.available = True
-            print("[POWER] ADS1015 detected")
-
-        except Exception as e:
-            print(f"[POWER] ADS1015 not available: {e}")
-            print("[POWER] Running without battery monitoring")
-
-    # ================= PUBLIC API =================
-
-    def get_voltage(self) -> float:
-        """
-        Real battery voltage (TP4056 OUT+)
-        Averaged to reduce noise
-        """
-        if not self.available:
-            return 0.0
-
-        samples = [self.chan.voltage for _ in range(5)]
-        avg_ads_v = sum(samples) / len(samples)
-
-        v_bat = avg_ads_v * self.ratio
-        return round(v_bat, 2)
+    def read_vbat(self) -> float:
+        v_adc = self.chan.voltage
+        vbat = v_adc * (self.r1 + self.r2) / self.r2
+        return vbat
 
     def get_percent(self) -> int:
-        """
-        Battery percentage (UI purpose only)
-
-        Linear mapping:
-        3.30V → 0%
-        4.20V → 100%
-        """
-        if not self.available:
-            return 0
-
-        v = self.get_voltage()
-
-        if v >= self.V_FULL:
-            return 100
-        if v <= self.V_EMPTY:
-            return 0
-
-        percent = (v - self.V_EMPTY) / (self.V_FULL - self.V_EMPTY) * 100
-        return int(percent)
+        try:
+            vbat = self.read_vbat()
+            pct = int(100 * (vbat - self.min_v) / (self.max_v - self.min_v))
+            pct = max(0, min(100, pct))
+            self._last_percent = pct
+            return pct
+        except Exception as e:
+            print("[POWER] read error:", e)
+            return self._last_percent if self._last_percent is not None else 0
 
     def is_low(self) -> bool:
-        """
-        Battery low warning (notify user)
-        """
-        if not self.available:
+        try:
+            return self.read_vbat() < 3.3
+        except Exception:
             return False
-        return self.get_voltage() <= self.V_LOW
 
     def should_shutdown(self) -> bool:
-        """
-        Battery critically low → must shutdown
-        """
-        if not self.available:
+        try:
+            return self.read_vbat() < 3.1
+        except Exception:
             return False
-        return self.get_voltage() <= self.V_SHUTDOWN
 
-    def shutdown(self) -> None:
-        """
-        Safe system shutdown
-        """
-        print("[POWER] Battery too low → shutting down")
-        time.sleep(1)
+    def shutdown(self):
+        print("[POWER] Shutdown requested")
+        import os
+
         os.system("sudo shutdown now")
-
-
-def create_power_manager(config=None) -> PowerManager:
-    print("[POWER] Initializing PowerManager")
-    return PowerManager()

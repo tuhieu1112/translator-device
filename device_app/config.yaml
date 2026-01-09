@@ -42,8 +42,8 @@ AUDIO:
 
 # ================= BUTTON GPIO =================
 BUTTONS:
-  TALK_PIN: 23
-  MODE_PIN: 24
+  TALK_PIN: 17
+  MODE_PIN: 27
   LONG_PRESS_SEC: 5.0
 
 # ================= DISPLAY (OLED) =================
