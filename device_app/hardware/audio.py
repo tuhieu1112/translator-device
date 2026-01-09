@@ -5,7 +5,7 @@ import soundfile as sf
 from scipy.signal import resample_poly
 
 
-class AudioBackend:
+class create_audio:
     def __init__(
         self,
         hw_sr=48000,
