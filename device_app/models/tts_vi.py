@@ -1,14 +1,11 @@
-# device_app/models/tts_vi.py
 from __future__ import annotations
-
 from device_app.models.piper_tts import PiperTTS
 
 
 class TTSVi(PiperTTS):
     def __init__(self, config: dict):
-        cfg = config["TTS"]["VI"]
+        # PiperTTS KHÔNG nhận tham số
+        super().__init__()
 
-        super().__init__(
-            cfg["MODEL_PATH"],
-            cfg["PIPER_EXE"],
-        )
+        self.voice = config["TTS"]["VI"]["VOICE"]
+        self.piper_exe = config["TTS"]["VI"]["PIPER_EXE"]
