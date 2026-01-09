@@ -13,28 +13,29 @@ except Exception:
 
 class GpioButtons:
     """
-    SAFE GPIO button backend for Raspberry Pi
+    SAFE GPIO button backend
 
-    - TALK: press / release (level-based)
+    - TALK: level-trigger (press / release)
     - MODE:
-        * short press  -> change mode
-        * long press   -> shutdown (>= LONG_PRESS_SEC)
+        * short press  -> toggle mode (ONCE)
+        * long press   -> shutdown (>= 5s)
     """
 
     LONG_PRESS_SEC = 5.0
-    DEBOUNCE_SEC = 0.03
+    DEBOUNCE_SEC = 0.05
+    COOLDOWN_SEC = 0.4  # chặn spam mode
 
     def __init__(self, cfg: dict):
         btn_cfg = cfg.get("BUTTON", {})
 
         self.talk_pin = int(btn_cfg.get("TALK_GPIO", 17))
         self.mode_pin = int(btn_cfg.get("MODE_GPIO", 27))
-        self.active_low = bool(btn_cfg.get("ACTIVE_LOW", True))
+        self.active_low = btn_cfg.get("ACTIVE_LOW", True)
 
-        # ---- internal state ----
         self._mode_last = False
         self._mode_press_t0: Optional[float] = None
         self._mode_handled = False
+        self._mode_last_action = 0.0
 
         if _HAS_GPIO:
             GPIO.setmode(GPIO.BCM)
@@ -54,50 +55,49 @@ class GpioButtons:
     # ================= TALK =================
 
     def is_talk_pressed(self) -> bool:
-        """
-        Level-based:
-        - True while button is held
-        """
         return self._read(self.talk_pin)
 
     # ================= MODE =================
 
     def poll_mode_event(self) -> Optional[str]:
         """
-        Non-blocking MODE button FSM.
+        Edge-triggered, non-blocking.
 
         Returns:
-            - "short" : short press (press & release)
-            - "long"  : long press (>= LONG_PRESS_SEC, only once)
+            - "short" : released before LONG_PRESS_SEC
+            - "long"  : pressed >= LONG_PRESS_SEC (ONLY ONCE)
             - None
         """
-
         now = time.monotonic()
         pressed = self._read(self.mode_pin)
 
-        # ===== pressed edge =====
+        # ---- pressed edge ----
         if pressed and not self._mode_last:
             self._mode_press_t0 = now
             self._mode_handled = False
 
-        # ===== holding =====
-        if pressed and self._mode_press_t0 and not self._mode_handled:
-            if now - self._mode_press_t0 >= self.LONG_PRESS_SEC:
-                self._mode_handled = True
-                return "long"
+        # ---- holding ----
+        if (
+            pressed
+            and self._mode_press_t0
+            and not self._mode_handled
+            and (now - self._mode_press_t0) >= self.LONG_PRESS_SEC
+        ):
+            self._mode_handled = True
+            return "long"
 
-        # ===== released edge =====
+        # ---- released edge ----
         if not pressed and self._mode_last:
-            # short press ONLY if long was NOT triggered
             if (
                 self._mode_press_t0
                 and not self._mode_handled
                 and (now - self._mode_press_t0) >= self.DEBOUNCE_SEC
+                and (now - self._mode_last_action) >= self.COOLDOWN_SEC
             ):
+                self._mode_last_action = now
                 self._mode_press_t0 = None
                 return "short"
 
-            # cleanup after release
             self._mode_press_t0 = None
             self._mode_handled = False
 
@@ -105,14 +105,7 @@ class GpioButtons:
         return None
 
 
-# ================= DEBUG BACKEND =================
-
-
 class DebugButtons:
-    """
-    Dummy backend for DEV / laptop
-    """
-
     def poll_mode_event(self):
         return None
 
@@ -120,15 +113,10 @@ class DebugButtons:
         return False
 
 
-# ================= FACTORY =================
-
-
 def create_buttons(cfg: dict):
     mode = str(cfg.get("BUTTON_MODE", "gpio")).lower()
-
     if mode == "gpio":
         print("[BUTTON] Using GPIO backend")
         return GpioButtons(cfg)
-
     print("[BUTTON] Using DEBUG backend")
     return DebugButtons()
