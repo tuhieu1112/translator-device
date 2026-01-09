@@ -26,13 +26,22 @@ def main() -> None:
     power = create_power_manager(config)
 
     # ========== MODELS ==========
-    # DEV: chưa load model
     pipeline = TranslatorPipeline(
         display=display,
         buttons=buttons,
         audio=audio,
         power=power,
         device_env=config.get("DEVICE_ENV", "DEV"),
+        # models – BẮT BUỘC
+        stt_vi=create_stt_vi(config),
+        stt_en=create_stt_en(config),
+        nmt_vi_en=create_nmt_vi_en(config),
+        nmt_en_vi=create_nmt_en_vi(config),
+        tts_vi=create_tts_vi(config),
+        tts_en=create_tts_en(config),
+        nlp_vi=create_nlp_vi(config),
+        nlp_en=create_nlp_en(config),
+        skeleton=create_skeleton(config),
     )
 
     pipeline.run(start_mode=Mode.VI_EN)
