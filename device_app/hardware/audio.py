@@ -1,9 +1,4 @@
-from __future__ import annotations
-
-import time
-import tempfile
-from typing import Optional
-
+import uuid
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
@@ -11,129 +6,105 @@ from scipy.signal import resample_poly
 
 
 class AudioBackend:
-    """
-    SAFE Audio backend for Raspberry Pi + USB soundcard
+    def __init__(
+        self,
+        hw_sr=48000,
+        stt_sr=16000,
+        channels=1,
+        input_device=None,
+        output_device=None,
+    ):
+        self.hw_sr = hw_sr
+        self.stt_sr = stt_sr
+        self.channels = channels
+        self.input_device = input_device
+        self.output_device = output_device
 
-    Rules:
-    - Record at HW sample rate (usually 48k)
-    - Resample to STT rate (16k)
-    - Playback ALWAYS at HW sample rate
-    """
-
-    def __init__(self, cfg: dict):
-        audio_cfg = cfg.get("AUDIO", {})
-
-        self.stt_rate: int = int(audio_cfg.get("STT_RATE", 16000))
-        self.hw_rate: int = int(audio_cfg.get("SAMPLE_RATE", 48000))
-        self.channels: int = int(audio_cfg.get("CHANNELS", 1))
-        self.max_seconds: int = int(audio_cfg.get("MAX_RECORD_SECONDS", 10))
-
-        self.input_device = audio_cfg.get("INPUT_DEVICE", None)
-        self.output_device = audio_cfg.get("OUTPUT_DEVICE", None)
-
-        self._buffer: Optional[np.ndarray] = None
-        self._record_t0: Optional[float] = None
+        self._frames = []
+        self._stream = None
 
         print(
-            f"[AUDIO] Init | HW_SR={self.hw_rate} | STT_SR={self.stt_rate} | "
-            f"CH={self.channels} | IN_DEV={self.input_device} | OUT_DEV={self.output_device}"
+            f"[AUDIO] Init | HW_SR={hw_sr} | STT_SR={stt_sr} | CH={channels} "
+            f"| IN_DEV={input_device} | OUT_DEV={output_device}"
         )
 
-    # ==================================================
+    # ===============================
     # RECORD
-    # ==================================================
+    # ===============================
 
-    def start_record(self) -> None:
-        """Start recording (non-blocking)."""
-        self._record_t0 = time.monotonic()
-        self._buffer = None
-
-        try:
-            self._buffer = sd.rec(
-                frames=int(self.max_seconds * self.hw_rate),
-                samplerate=self.hw_rate,
-                channels=self.channels,
-                dtype="int16",
-                device=self.input_device,
-            )
-            print("[AUDIO] Recording started")
-
-        except Exception as e:
-            self._buffer = None
-            raise RuntimeError(f"start_record failed: {e}")
-
-    def stop_record(self) -> str:
-        """Stop recording and return path to 16kHz wav for STT."""
-        try:
-            sd.wait()
-        except Exception:
-            pass
-
-        if self._buffer is None:
-            raise RuntimeError("stop_record: no buffer")
-
-        duration = time.monotonic() - (self._record_t0 or time.monotonic())
-
-        if duration < 0.3:
-            raise RuntimeError("recording too short")
-
-        audio = np.asarray(self._buffer).squeeze()
-
-        if audio.size == 0:
-            raise RuntimeError("stop_record: empty audio")
-
-        # Resample HW -> STT
-        if self.hw_rate != self.stt_rate:
-            audio = resample_poly(audio, self.stt_rate, self.hw_rate)
-
-        tmp = tempfile.NamedTemporaryFile(
-            suffix=".wav", delete=False, prefix="rec_", dir="/tmp"
-        )
-        sf.write(tmp.name, audio, self.stt_rate)
-        tmp.close()
-
-        print(f"[AUDIO] Saved: {tmp.name}")
-        return tmp.name
-
-    # ==================================================
-    # PLAY
-    # ==================================================
-
-    def play_wav(self, wav_path: str) -> None:
-        try:
-            audio, sr = sf.read(wav_path, dtype="int16")
-
-            # 🔥 FIX QUAN TRỌNG
-            if sr != self.hw_rate:
-                print(f"[AUDIO] Resample playback {sr} -> {self.hw_rate}")
-                audio = resample_poly(audio, self.hw_rate, sr)
-                sr = self.hw_rate
-
-            sd.play(audio, sr, device=self.output_device)
-            sd.wait()
-
-        except Exception as e:
-            print("[AUDIO] play failed:", e)
-
-
-# ================= FACTORY =================
-
-
-class DebugAudio:
     def start_record(self):
-        print("[AUDIO][DEBUG] start_record")
+        self._frames = []
+
+        def callback(indata, frames, time, status):
+            if status:
+                print("[AUDIO] input status:", status)
+            self._frames.append(indata.copy())
+
+        self._stream = sd.InputStream(
+            samplerate=self.hw_sr,
+            channels=self.channels,
+            dtype="float32",
+            callback=callback,
+            device=self.input_device,
+        )
+        self._stream.start()
+        print("[AUDIO] Recording started")
 
     def stop_record(self) -> str:
-        raise RuntimeError("DEBUG audio: no recording")
+        self._stream.stop()
+        self._stream.close()
 
-    def play_wav(self, wav_path: str):
-        print("[AUDIO][DEBUG] play", wav_path)
+        audio = np.concatenate(self._frames, axis=0).squeeze()
+        print(f"[AUDIO] Frames collected: {len(audio)}")
 
+        # ===== RAW SAVE (48k) =====
+        uid = uuid.uuid4().hex[:8]
+        raw_path = f"/tmp/rec_{uid}_48k.wav"
+        sf.write(raw_path, audio, self.hw_sr, subtype="PCM_16")
+        print(f"[AUDIO] RAW saved: {raw_path}")
 
-def create_audio(cfg: dict):
-    mode = str(cfg.get("AUDIO_MODE", "alsa")).lower()
-    if mode == "alsa":
-        print("[AUDIO] Using ALSA / sounddevice backend")
-        return AudioBackend(cfg)
-    print("[AUDIO] Using DEBUG backend")
-    return DebugAudio()
+        # ===== STATS (48k) =====
+        self._log_stats(audio, self.hw_sr, tag="RAW-48k")
+
+        # ===== RESAMPLE → 16k FOR STT =====
+        audio_16k = resample_poly(audio, self.stt_sr, self.hw_sr)
+
+        stt_path = f"/tmp/rec_{uid}_16k.wav"
+        sf.write(stt_path, audio_16k, self.stt_sr, subtype="PCM_16")
+        print(f"[AUDIO] STT WAV saved: {stt_path}")
+
+        # ===== STATS (16k) =====
+        self._log_stats(audio_16k, self.stt_sr, tag="STT-16k")
+
+        return stt_path
+
+    # ===============================
+    # PLAY (FOR TTS)
+    # ===============================
+
+    def play(self, audio: np.ndarray, sr: int):
+        print(f"[AUDIO] Play | SR={sr} | len={len(audio)}")
+        self._log_stats(audio, sr, tag="TTS-OUT")
+
+        sd.play(audio, sr, device=self.output_device)
+        sd.wait()
+
+    # ===============================
+    # UTILS
+    # ===============================
+
+    @staticmethod
+    def _log_stats(audio: np.ndarray, sr: int, tag="AUDIO"):
+        if len(audio) == 0:
+            print(f"[{tag}] EMPTY AUDIO")
+            return
+
+        rms = float(np.sqrt(np.mean(audio**2)))
+        peak = float(np.max(np.abs(audio)))
+        clip = float(np.mean(np.abs(audio) > 0.99))
+        dc = float(np.mean(audio))
+
+        print(
+            f"[{tag}] SR={sr} | len={len(audio)} | "
+            f"RMS={rms:.4f} | Peak={peak:.3f} | Clip={clip:.4f} | DC={dc:.5f}"
+        )
