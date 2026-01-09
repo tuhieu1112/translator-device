@@ -22,7 +22,7 @@ class TranslatorPipeline:
         self.audio = audio
         self.power = power
 
-        # ===== MODELS (GIỮ NGUYÊN) =====
+        # ===== MODELS =====
         self.stt_en = models.get("stt_en")
         self.stt_vi = models.get("stt_vi")
         self.nmt_en_vi = models.get("nmt_en_vi")
@@ -38,7 +38,7 @@ class TranslatorPipeline:
         self.state: str = "READY"
 
         self._running = True
-        self._talk_handled = False  # edge-trigger TALK
+        self._talk_pressed_prev = False  # EDGE detect
 
         print("[PIPELINE] Initializing pipeline")
         print(f"[PIPELINE] Device env = {self.device_env}")
@@ -60,10 +60,10 @@ class TranslatorPipeline:
             self._safe_power_tick()
             self._safe_mode_button()
             self._safe_talk_button()
-            time.sleep(0.05)
+            time.sleep(0.02)
 
     # ==================================================
-    # SAFE POWER
+    # POWER
     # ==================================================
 
     def _safe_power_tick(self) -> None:
@@ -84,10 +84,10 @@ class TranslatorPipeline:
                 self._request_shutdown()
 
         except Exception as e:
-            print("[POWER] ignored error:", e)
+            print("[POWER] ignored:", e)
 
     # ==================================================
-    # MODE BUTTON (short / long + countdown)
+    # MODE BUTTON
     # ==================================================
 
     def _safe_mode_button(self) -> None:
@@ -102,43 +102,9 @@ class TranslatorPipeline:
                     mode=self.mode,
                     state="SHUTDOWN",
                 )
-                self._safe_shutdown()
-                return
-
+                self._request_shutdown()
         except Exception as e:
-            print("[BUTTON] mode ignored error:", e)
-
-    def _shutdown_countdown(self) -> None:
-        for sec in range(5, 0, -1):
-            self.display.show_status(
-                mode=self.mode,
-                state=f"SHUTDOWN {sec}",
-            )
-            time.sleep(1)
-
-        self._request_shutdown()
-
-    # ==================================================
-    # TALK BUTTON (EDGE TRIGGER)
-    # ==================================================
-
-    def _safe_talk_button(self) -> None:
-        try:
-            pressed = self.buttons.is_talk_pressed()
-
-            if pressed and not self._talk_handled and self.state == "READY":
-                self._talk_handled = True
-                self._safe_handle_talk()
-
-            if not pressed:
-                self._talk_handled = False
-
-        except Exception as e:
-            print("[BUTTON] talk ignored error:", e)
-
-    # ==================================================
-    # MODE
-    # ==================================================
+            print("[BUTTON] mode ignored:", e)
 
     def _toggle_mode(self) -> None:
         self.mode = Mode.EN_VI if self.mode == Mode.VI_EN else Mode.VI_EN
@@ -152,12 +118,35 @@ class TranslatorPipeline:
             pass
 
     # ==================================================
+    # TALK BUTTON (EDGE + HOLD)
+    # ==================================================
+
+    def _safe_talk_button(self) -> None:
+        try:
+            pressed = self.buttons.is_talk_pressed()
+
+            # ---- PRESS EDGE → START RECORD ----
+            if pressed and not self._talk_pressed_prev and self.state == "READY":
+                self._talk_pressed_prev = True
+                self._handle_talk_start()
+
+            # ---- RELEASE EDGE → STOP RECORD ----
+            elif not pressed and self._talk_pressed_prev and self.state == "RECORDING":
+                self._talk_pressed_prev = False
+                self._handle_talk_stop()
+
+            elif not pressed:
+                self._talk_pressed_prev = False
+
+        except Exception as e:
+            print("[BUTTON] talk ignored:", e)
+
+    # ==================================================
     # TALK FLOW
     # ==================================================
 
-    def _safe_handle_talk(self) -> None:
+    def _handle_talk_start(self) -> None:
         print("[TALK] Start")
-
         self.state = "RECORDING"
         self.display.show_status(mode=self.mode, state="LISTENING")
 
@@ -166,10 +155,9 @@ class TranslatorPipeline:
         except Exception as e:
             print("[AUDIO] start_record failed:", e)
             self._back_to_ready()
-            return
 
-        while self.buttons.is_talk_pressed():
-            time.sleep(0.02)
+    def _handle_talk_stop(self) -> None:
+        print("[TALK] Stop")
 
         try:
             wav_path = self.audio.stop_record()
@@ -178,44 +166,72 @@ class TranslatorPipeline:
             self._back_to_ready()
             return
 
+        print(f"[AUDIO] WAV saved: {wav_path}")
+
         if self.device_env == "DEV":
-            print("[DEV] Talk done")
+            print("[DEV] Skip translate")
             self._back_to_ready()
             return
 
+        # ================= TRANSLATE =================
         try:
             self.state = "TRANSLATING"
             self.display.show_status(mode=self.mode, state="TRANSLATING")
 
-            text_in = (
-                self.stt_vi.transcribe_file(wav_path)
-                if self.mode == Mode.VI_EN
-                else self.stt_en.transcribe_file(wav_path)
-            )
+            # -------- STT --------
+            if self.mode == Mode.VI_EN:
+                print("[STT] Using VI")
+                text_in = self.stt_vi.transcribe_file(wav_path)
+            else:
+                print("[STT] Using EN")
+                text_in = self.stt_en.transcribe_file(wav_path)
 
+            print(f"[STT] Text in: '{text_in}'")
+
+            # -------- NLP --------
             nlp = self.nlp_vi if self.mode == Mode.VI_EN else self.nlp_en
             result = nlp.process(text_in)
+
+            print("[NLP] Result:", result)
 
             if not result.get("ok"):
                 self._speak_fallback(result.get("fallback", ""))
                 self._back_to_ready()
                 return
 
+            # -------- NMT + TTS --------
             if self.mode == Mode.VI_EN:
                 skel, slots = self.skeleton.extract_vi(result["text"])
+                print("[SKELETON] VI:", skel, slots)
+
                 translated = self.nmt_vi_en.translate(skel)
+                print("[NMT] VI→EN:", translated)
+
                 text_out = self.skeleton.compose(translated, slots)
+                print("[FINAL EN]:", text_out)
+
                 self.tts_en.speak(text_out)
+
             else:
                 skel, slots = self.skeleton.extract_en(result["text"])
+                print("[SKELETON] EN:", skel, slots)
+
                 translated = self.nmt_en_vi.translate(skel)
+                print("[NMT] EN→VI:", translated)
+
                 text_out = self.skeleton.compose(translated, slots)
+                print("[FINAL VI]:", text_out)
+
                 self.tts_vi.speak(text_out)
 
         except Exception as e:
             print("[PIPELINE] talk flow error:", e)
 
         self._back_to_ready()
+
+    # ==================================================
+    # FALLBACK
+    # ==================================================
 
     def _speak_fallback(self, text: str) -> None:
         try:
