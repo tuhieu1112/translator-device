@@ -196,17 +196,38 @@ class TranslatorPipeline:
 
             # -------- NMT + TTS --------
             if self.mode == Mode.VI_EN:
-                # ===== VI -> EN (GIỮ skeleton) =====
+                # ===== SKELETON EXTRACT =====
                 skel, slots = self.skeleton.extract_vi(result["text"])
                 print("[SKELETON][VI] skel =", skel)
                 print("[SKELETON][VI] slots =", slots)
 
-                translated = self.nmt_vi_en.translate(skel)
-                print("[NMT][VI->EN] input :", skel)
+                # ===== MAKE NMT-SAFE TOKENS =====
+                import re
+
+                safe_skel = skel
+                safe_slots = {}
+
+                for ph, value in slots.items():
+                    # ví dụ ph = "[PN0]"
+                    name = re.sub(r"^\[|\]$", "", ph)  # PN0
+                    safe_token = f"PN_{name}"  # PN_PN0
+
+                    safe_skel = safe_skel.replace(ph, safe_token)
+                    safe_slots[safe_token] = value
+
+                print("[SKELETON][VI] safe_skel =", safe_skel)
+                print("[SKELETON][VI] safe_slots =", safe_slots)
+
+                # ===== NMT =====
+                print("[NMT][VI->EN] input :", safe_skel)
+                translated = self.nmt_vi_en.translate(safe_skel)
                 print("[NMT][VI->EN] output:", translated)
-                text_out = self.skeleton.compose(translated, slots)
+
+                # ===== COMPOSE BACK =====
+                text_out = self.skeleton.compose(translated, safe_slots)
                 print("[FINAL][EN]:", text_out)
-                self._tts_play(self.tts_en, text_out)
+
+                self.tts_en.speak(self.tts_en, text_out)
 
             else:
                 # ===== EN -> VI (BỎ skeleton HOÀN TOÀN) =====
@@ -216,7 +237,7 @@ class TranslatorPipeline:
                 translated = self.nmt_en_vi.translate(src_text)
                 print("[NMT][EN->VI] output:", translated)
 
-                self._tts_play(self.tts_vi, translated)
+                self.tts_vi.speak(self.tts_vi, translated)
 
         except Exception as e:
             print("[PIPELINE] talk flow error:", e)
