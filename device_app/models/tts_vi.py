@@ -4,8 +4,8 @@ import os
 import tempfile
 from typing import Optional
 
-from device_app.tts.tts_base import TTSBase
-from device_app.tts.piper_tts import PiperTTS
+from device_app.models.tts_base import TTSBase
+from device_app.models.piper_tts import PiperTTS
 
 
 class TTSVi(TTSBase):
