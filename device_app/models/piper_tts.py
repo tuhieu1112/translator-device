@@ -5,7 +5,7 @@ import subprocess
 import sys
 import os
 from typing import Optional
-from tts_base import TTSBase
+from device_app.models.tts_base import TTSBase
 
 
 class PiperTTS(TTSBase):
