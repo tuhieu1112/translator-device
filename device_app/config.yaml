@@ -30,11 +30,13 @@ TTS:
     BACKEND: "piper"
     PIPER_EXE: "/home/tuhieu/translator-device/venv/bin/piper"
     VOICE: "artifacts/tts_en/en_US-ljspeech-high.onnx"
+    MODEL_PATH: "artifacts/tts_en/en_US-ljspeech-high.onnx"
 
   VI:
     BACKEND: "piper"
     PIPER_EXE: "/home/tuhieu/translator-device/venv/bin/piper"
     VOICE: "artifacts/tts_vi/vi_VN-vais1000-medium.onnx"
+    MODEL_PATH: "artifacts/tts_en/en_US-ljspeech-high.onnx"
 
 # ================= AUDIO =================
 AUDIO:
