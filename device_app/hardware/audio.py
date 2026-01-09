@@ -1,116 +1,143 @@
 from __future__ import annotations
 
 import time
-import wave
 import tempfile
-from typing import Any
+from typing import Optional
 
 import numpy as np
 import sounddevice as sd
+import soundfile as sf
 from scipy.signal import resample_poly
 
 
 class AudioBackend:
     """
-    Audio backend SAFE for Raspberry Pi:
+    SAFE Audio backend for Raspberry Pi + USB soundcard
+
+    Design:
+    - Record at hardware sample rate (usually 44100 / 48000)
+    - Resample to STT sample rate (16k)
     - No librosa
     - No numba
-    - No crash if recording too short
+    - Never crash pipeline
     """
 
-    def __init__(self, config: dict[str, Any]) -> None:
-        audio_cfg = config.get("AUDIO", {})
+    def __init__(self, cfg: dict):
+        audio_cfg = cfg.get("AUDIO", {})
 
-        self.sample_rate = int(audio_cfg.get("SAMPLE_RATE", 16000))
-        self.channels = int(audio_cfg.get("CHANNELS", 1))
-        self.max_seconds = int(audio_cfg.get("MAX_RECORD_SECONDS", 10))
+        # STT expects 16k
+        self.stt_rate: int = int(audio_cfg.get("STT_RATE", 16000))
+
+        # Hardware rate (USB mic thường là 48000)
+        self.hw_rate: int = int(audio_cfg.get("SAMPLE_RATE", 48000))
+
+        self.channels: int = int(audio_cfg.get("CHANNELS", 1))
+        self.max_seconds: int = int(audio_cfg.get("MAX_RECORD_SECONDS", 10))
 
         self.input_device = audio_cfg.get("INPUT_DEVICE", None)
         self.output_device = audio_cfg.get("OUTPUT_DEVICE", None)
 
-        self._recording = False
-        self._frames: list[np.ndarray] = []
-        self._stream: sd.InputStream | None = None
+        self._buffer: Optional[np.ndarray] = None
+        self._record_t0: Optional[float] = None
 
         print(
-            f"[AUDIO] Init | SR={self.sample_rate} | CH={self.channels} | "
-            f"IN_DEV={self.input_device} | OUT_DEV={self.output_device}"
+            f"[AUDIO] Init | HW_SR={self.hw_rate} | STT_SR={self.stt_rate} | "
+            f"CH={self.channels} | IN_DEV={self.input_device} | OUT_DEV={self.output_device}"
         )
 
-    # ================= RECORD =================
+    # ==================================================
+    # RECORD
+    # ==================================================
 
     def start_record(self) -> None:
-        if self._recording:
-            return
-
-        self._frames.clear()
-        self._recording = True
-
-        def callback(indata, frames, time_info, status):
-            if self._recording:
-                self._frames.append(indata.copy())
-
-        self._stream = sd.InputStream(
-            samplerate=48000,  # native USB mic SR
-            channels=self.channels,
-            dtype="int16",
-            callback=callback,
-            device=self.input_device,
-        )
-
-        self._stream.start()
-        print("[AUDIO] Recording started")
-
-    def stop_record(self) -> str | None:
-        if not self._recording:
-            return None
-
-        self._recording = False
+        """Start recording (non-blocking)."""
+        self._record_t0 = time.monotonic()
+        self._buffer = None
 
         try:
-            if self._stream:
-                self._stream.stop()
-                self._stream.close()
+            self._buffer = sd.rec(
+                int(self.max_seconds * self.hw_rate),
+                samplerate=self.hw_rate,
+                channels=self.channels,
+                dtype="int16",
+                device=self.input_device,
+            )
+            print("[AUDIO] Recording started")
+        except Exception as e:
+            self._buffer = None
+            raise RuntimeError(f"start_record failed: {e}")
+
+    def stop_record(self) -> str:
+        """
+        Stop recording.
+        Returns path to 16kHz WAV file for STT.
+        """
+        try:
+            sd.wait()
         except Exception:
             pass
 
-        if not self._frames:
-            print("[AUDIO] stop_record: no frames")
-            return None
+        if self._buffer is None:
+            raise RuntimeError("stop_record: no buffer")
 
-        audio = np.concatenate(self._frames, axis=0)
+        duration = time.monotonic() - (self._record_t0 or time.monotonic())
 
-        duration = len(audio) / 48000
+        # quá ngắn → bỏ
         if duration < 0.3:
             print("[AUDIO] stop_record: too short")
-            return None
+            raise RuntimeError("recording too short")
 
-        # ---- resample 48k -> 16k (SAFE) ----
-        audio_16k = resample_poly(audio, up=1, down=3)
+        audio = np.asarray(self._buffer).squeeze()
 
-        # ---- write wav ----
-        fd, path = tempfile.mkstemp(suffix=".wav")
-        with wave.open(path, "wb") as wf:
-            wf.setnchannels(self.channels)
-            wf.setsampwidth(2)
-            wf.setframerate(self.sample_rate)
-            wf.writeframes(audio_16k.tobytes())
+        if audio.size == 0:
+            raise RuntimeError("stop_record: no frames")
 
-        print(f"[AUDIO] Saved: {path}")
-        return path
+        # ---- resample về 16k cho STT ----
+        if self.hw_rate != self.stt_rate:
+            audio = resample_poly(audio, self.stt_rate, self.hw_rate)
 
-    # ================= PLAY =================
+        # ---- save temp wav ----
+        tmp = tempfile.NamedTemporaryFile(
+            suffix=".wav", delete=False, prefix="rec_", dir="/tmp"
+        )
+        sf.write(tmp.name, audio, self.stt_rate)
+        tmp.close()
+
+        print(f"[AUDIO] Saved: {tmp.name}")
+        return tmp.name
+
+    # ==================================================
+    # PLAY
+    # ==================================================
 
     def play_wav(self, wav_path: str) -> None:
+        """Play wav file safely."""
         try:
-            with wave.open(wav_path, "rb") as wf:
-                data = wf.readframes(wf.getnframes())
-                audio = np.frombuffer(data, dtype=np.int16)
-                sd.play(audio, wf.getframerate(), device=self.output_device)
-                sd.wait()
+            audio, sr = sf.read(wav_path, dtype="int16")
+            sd.play(audio, sr, device=self.output_device)
+            sd.wait()
         except Exception as e:
             print("[AUDIO] play failed:", e)
 
 
-def create_audio(config: dict[str, Any]) -> AudioBackend:
-    return AudioBackend(config)
+# ================= FACTORY =================
+
+
+class DebugAudio:
+    def start_record(self):
+        print("[AUDIO][DEBUG] start_record")
+
+    def stop_record(self) -> str:
+        raise RuntimeError("DEBUG audio: no recording")
+
+    def play_wav(self, wav_path: str):
+        print("[AUDIO][DEBUG] play", wav_path)
+
+
+def create_audio(cfg: dict):
+    mode = str(cfg.get("AUDIO_MODE", "alsa")).lower()
+    if mode == "alsa":
+        print("[AUDIO] Using ALSA / sounddevice backend")
+        return AudioBackend(cfg)
+    print("[AUDIO] Using DEBUG backend")
+    return DebugAudio()
