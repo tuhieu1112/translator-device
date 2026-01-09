@@ -15,10 +15,13 @@ from device_app.hardware.power import create_power_manager
 # ===== MODELS =====
 from device_app.models.stt_vi import STTVi
 from device_app.models.stt_en import STTEn
+
 from device_app.models.nmt_vi_en import NMTViEn
 from device_app.models.nmt_en_vi import NMTEnVi
+
 from device_app.models.tts_vi import TTSVi
 from device_app.models.tts_en import TTSEn
+
 from device_app.models.nlp.nlp_processor import NLPProcessorV2
 from device_app.models.nlp.skeleton_translation import SkeletonTranslator
 
