@@ -1,11 +1,10 @@
-# device_app/hardware/power.py
 from __future__ import annotations
 import time
 import os
 
 
 # ==========================================================
-# DUMMY POWER (fallback – NEVER BLOCK)
+# DUMMY POWER (SAFE FALLBACK)
 # ==========================================================
 class DummyPowerManager:
     def __init__(self):
@@ -18,60 +17,66 @@ class DummyPowerManager:
         return False
 
     def shutdown(self):
-        print("[POWER] Dummy shutdown requested (ignored)")
+        print("[POWER] Dummy shutdown ignored")
 
 
 # ==========================================================
-# REAL POWER (ADS1015)
+# REAL POWER (NON-BLOCKING)
 # ==========================================================
 class PowerManager:
     def __init__(self, cfg: dict):
+        self.cfg = cfg
         self.min_v = 3.2
         self.max_v = 4.2
         self.r1 = float(cfg.get("R1", 33000))
         self.r2 = float(cfg.get("R2", 100000))
         self.address = int(str(cfg.get("I2C_ADDRESS", "0x48")), 16)
 
-        self._last_percent = 100
         self._ads = None
         self._chan = None
+        self._last_percent = 100
+        self._failed = False
+
+        print("[POWER] PowerManager created (lazy init)")
+
+    def _ensure_adc(self):
+        if self._failed or self._ads is not None:
+            return
 
         try:
-            import board
-            import busio
+            import board, busio
             from adafruit_ads1x15.ads1015 import ADS1015
             from adafruit_ads1x15.analog_in import AnalogIn
 
-            print("[POWER] Initializing ADS1015...")
+            print("[POWER] Initializing ADS1015 (lazy)...")
 
-            self.i2c = busio.I2C(board.SCL, board.SDA)
+            i2c = busio.I2C(board.SCL, board.SDA)
 
-            # ⚠️ CRITICAL: timeout protection
             t0 = time.time()
-            while not self.i2c.try_lock():
-                if time.time() - t0 > 1.0:
+            while not i2c.try_lock():
+                if time.time() - t0 > 0.5:
                     raise TimeoutError("I2C lock timeout")
                 time.sleep(0.01)
 
-            self._ads = ADS1015(self.i2c, address=self.address)
+            self._ads = ADS1015(i2c, address=self.address)
             self._chan = AnalogIn(self._ads, 0)
 
-            self.i2c.unlock()
-
+            i2c.unlock()
             print("[POWER] ADS1015 ready")
 
         except Exception as e:
-            print("[POWER] Init failed → fallback DummyPowerManager:", e)
-            raise
-
-    def read_vbat(self) -> float:
-        v_adc = self._chan.voltage
-        return v_adc * (self.r1 + self.r2) / self.r2
+            print("[POWER] ADS1015 failed → disable power:", e)
+            self._failed = True
 
     def get_percent(self) -> int:
+        self._ensure_adc()
+        if self._failed or not self._chan:
+            return self._last_percent
+
         try:
-            v = self.read_vbat()
-            pct = int(100 * (v - self.min_v) / (self.max_v - self.min_v))
+            v_adc = self._chan.voltage
+            vbat = v_adc * (self.r1 + self.r2) / self.r2
+            pct = int(100 * (vbat - self.min_v) / (self.max_v - self.min_v))
             pct = max(0, min(100, pct))
             self._last_percent = pct
             return pct
@@ -79,8 +84,11 @@ class PowerManager:
             return self._last_percent
 
     def is_low(self) -> bool:
+        self._ensure_adc()
+        if self._failed or not self._chan:
+            return False
         try:
-            return self.read_vbat() < 3.3
+            return self.get_percent() < 10
         except Exception:
             return False
 
@@ -94,7 +102,6 @@ class PowerManager:
 # ==========================================================
 def create_power_manager(cfg: dict):
     try:
-        power_cfg = cfg.get("POWER", cfg)
-        return PowerManager(power_cfg)
+        return PowerManager(cfg.get("POWER", cfg))
     except Exception:
         return DummyPowerManager()
