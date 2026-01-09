@@ -1,20 +1,18 @@
 # device_app/models/tts_en.py
 from __future__ import annotations
 
-from .piper_tts import PiperTTS
+from device_app.models.piper_tts import PiperTTS
 
 
 class TTSEn(PiperTTS):
     """
-    English TTS wrapper
-    Backend: Piper
-    Output: WAV file (native Piper sample rate, usually 22050 Hz)
+    English TTS wrapper (Piper backend)
     """
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict):
+        tts_cfg = config["TTS"]["EN"]
+
         super().__init__(
-            config=config,
-            lang="en",
-            model_path=config["TTS"]["EN"]["MODEL_PATH"],
-            speaker_id=config["TTS"]["EN"].get("SPEAKER_ID", 0),
+            model_path=tts_cfg["MODEL_PATH"],
+            piper_exe=tts_cfg["PIPER_EXE"],
         )
