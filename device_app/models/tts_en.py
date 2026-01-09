@@ -1,14 +1,34 @@
-# device_app/models/tts_en.py
-from __future__ import annotations
-
-from typing import Any, Mapping
-
-from device_app.models.tts_base import TTSBase
+# tts_en.py
+from piper_tts import PiperTTS
 
 
-class TTSEn(TTSBase):
-    """TTS tiếng Anh dùng Piper."""
+def create_tts_en(config: dict):
+    """
+    Example factory. config can come from your global config.
+    Expected keys (optional): MODEL, VOICE, PIPER_EXE, HW_SR, OUT_DEV
+    """
+    model = config.get("VOICE_FILE") or config.get("MODEL")
+    voice = config.get("SPEAKER") or config.get("VOICE")
+    return PiperTTS(
+        model=model,
+        voice=voice,
+        piper_exe=config.get("PIPER_EXE", "piper"),
+        hw_sr=config.get("HW_SR", 48000),
+        out_device=config.get("OUT_DEV"),
+    )
 
-    def __init__(self, config: Mapping[str, Any]) -> None:
-        # key "EN" trong config["TTS"]
-        super().__init__(config=config, tts_key="EN", lang="en")
+
+# tts_vi.py
+from piper_tts import PiperTTS
+
+
+def create_tts_vi(config: dict):
+    model = config.get("VOICE_FILE") or config.get("MODEL")
+    voice = config.get("SPEAKER") or config.get("VOICE")
+    return PiperTTS(
+        model=model,
+        voice=voice,
+        piper_exe=config.get("PIPER_EXE", "piper"),
+        hw_sr=config.get("HW_SR", 48000),
+        out_device=config.get("OUT_DEV"),
+    )

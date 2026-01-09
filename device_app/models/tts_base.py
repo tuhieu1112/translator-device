@@ -1,118 +1,82 @@
-# device_app/models/tts_base.py
+# tts_base.py
 from __future__ import annotations
-
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Mapping, Optional
-import subprocess
+import abc
+import os
 import tempfile
-
-import soundfile as sf
-import sounddevice as sd
+from typing import Optional
 
 
-@dataclass
-class TTSBase:
+class TTSBase(abc.ABC):
     """
-    Base class chung cho TTS EN / VI.
-
-    - Đọc cấu hình từ config["TTS"][...]
-    - Nếu BACKEND = "piper": gọi piper để sinh WAV rồi phát luôn.
-    - Nếu BACKEND = "debug": chỉ in chữ (phòng khi piper lỗi).
+    Base TTS interface used by the pipeline.
+    Implementations must provide speak(text) and synthesize_to_file(path, text).
     """
 
-    lang: str
-    backend: str = "debug"
-    piper_exe: Optional[Path] = None
-    voice_path: Optional[Path] = None
-
-    def __init__(self, config: Mapping[str, Any], tts_key: str, lang: str) -> None:
+    def __init__(self, *, hw_sr: int = 48000, out_device: Optional[int] = None) -> None:
         """
-        tts_key: "EN" hoặc "VI" (key con trong TTS: ...)
-        lang  : mã hiển thị (en/vi) để log cho dễ nhìn.
+        :param hw_sr: hardware/ASLA output sample rate (e.g. 48000)
+        :param out_device: optional sounddevice output device index
         """
-        self.lang = lang
+        self.hw_sr = int(hw_sr)
+        self.out_device = out_device
 
-        tts_cfg = config.get("TTS", {}).get(tts_key, {}) or {}
-        self.backend = str(tts_cfg.get("BACKEND", "debug")).lower()
+    @abc.abstractmethod
+    def synthesize_to_file(self, path: str, text: str) -> None:
+        """
+        Synthesize `text` into `path` WAV file.
+        Must create a readable WAV with a known sample rate (any).
+        """
+        raise NotImplementedError
 
-        exe = tts_cfg.get("PIPER_EXE")
-        self.piper_exe = Path(exe) if exe else None
-
-        voice = tts_cfg.get("VOICE")
-        self.voice_path = Path(voice) if voice else None
-
-    # -------------------------------------------------
-    # Hàm public dùng trong pipeline
-    # -------------------------------------------------
     def speak(self, text: str) -> None:
         """
-        Đọc (hoặc giả lập đọc) câu 'text'.
+        Convenience: synthesize to a temp file, then play it (resample to hw_sr if needed).
+        Pipeline should call this.
         """
-        text = (text or "").strip()
-        if not text:
-            return
-
-        if self.backend == "piper":
+        tf = tempfile.NamedTemporaryFile(prefix="tts_", suffix=".wav", delete=False)
+        tf.close()
+        wav_path = tf.name
+        try:
+            self.synthesize_to_file(wav_path, text)
+            # playback + resample handled by helper below
+            self._play_wav_resampled(wav_path)
+        finally:
             try:
-                self._speak_with_piper(text)
-                return
-            except Exception as e:  # nếu Piper lỗi thì fallback debug
-                print(f"[TTS {self.lang}] Piper lỗi: {e!r} -> fallback DEBUG")
+                os.unlink(wav_path)
+            except Exception:
+                pass
 
-        # Fallback: chỉ in chữ
-        print(f"[TTS DEBUG {self.lang}] {text}")
+    def _play_wav_resampled(self, wav_path: str) -> None:
+        """
+        Read the wav file, resample if needed to self.hw_sr and play via sounddevice.
+        """
+        import soundfile as sf
+        import sounddevice as sd
+        from scipy.signal import resample_poly
+        import numpy as np
 
-    # -------------------------------------------------
-    # Nội bộ: dùng Piper
-    # -------------------------------------------------
-    def _speak_with_piper(self, text: str) -> None:
-        if not self.piper_exe or not self.voice_path:
-            raise RuntimeError("Piper chưa cấu hình đúng PIPER_EXE / VOICE")
-
-        if not self.piper_exe.is_file():
-            raise FileNotFoundError(f"Không tìm thấy piper: {self.piper_exe}")
-
-        # PATH model có thể là tương đối, nên chuẩn hóa về tuyệt đối
-        voice_path = self.voice_path
-        if not voice_path.is_absolute():
-            voice_path = Path.cwd() / voice_path
-
-        if not voice_path.is_file():
-            raise FileNotFoundError(f"Không tìm thấy model Piper: {voice_path}")
-
-        # Tạo file WAV tạm
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            wav_path = Path(f.name)
-
-        # Một số bản build Piper dùng -m / -f, một số dùng --model / --output_file.
-        # Mình ưu tiên dùng dạng dài --model / --output_file (thông dụng hơn).
-        cmd = [
-            str(self.piper_exe),
-            "--model",
-            str(voice_path),
-            "--output_file",
-            str(wav_path),
-        ]
-
-        print(f"[TTS {self.lang}] Piper synthesize...")
-        # Piper đọc text từ stdin (UTF-8)
-        completed = subprocess.run(
-            cmd,
-            input=text.encode("utf-8"),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-
-        if completed.returncode != 0:
-            raise RuntimeError(
-                f"Piper trả về mã lỗi {completed.returncode}, "
-                f"stderr: {completed.stderr.decode(errors='ignore')}"
-            )
-
-        # Đọc WAV và phát
         data, sr = sf.read(wav_path, dtype="float32")
-        print(f"[TTS {self.lang}] Phát âm thanh (sr={sr}, {len(data)} mẫu)...")
-        sd.play(data, sr)
-        sd.wait()
+        if data.ndim == 1:
+            # make it (N,1) for sounddevice if needed (sounddevice accepts (N,) or (N,channels))
+            pass
+
+        if sr != self.hw_sr:
+            # resample each channel independently
+            if data.ndim == 1:
+                data_rs = resample_poly(data, self.hw_sr, sr)
+            else:
+                # axis 0 is samples
+                channels = []
+                for ch in range(data.shape[1]):
+                    channels.append(resample_poly(data[:, ch], self.hw_sr, sr))
+                data_rs = np.stack(channels, axis=1)
+            data = data_rs.astype("float32")
+            sr = self.hw_sr
+
+        # play (use out_device if provided)
+        try:
+            sd.play(data, sr, device=self.out_device)
+            sd.wait()
+        except Exception as e:
+            # best-effort: print error but do not crash pipeline
+            print("[TTS] playback error:", e)
