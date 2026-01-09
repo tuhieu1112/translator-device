@@ -1,130 +1,116 @@
 from __future__ import annotations
-from pathlib import Path
-from typing import Dict, Any
+
+import time
+import wave
+import tempfile
+from typing import Any
 
 import numpy as np
 import sounddevice as sd
-import soundfile as sf
-import librosa
-
-
-# ================= DEFAULT CONFIG =================
-
-DEFAULT_INPUT_DEVICE = 1
-DEFAULT_OUTPUT_DEVICE = 1
-
-STT_SAMPLE_RATE = 16000
-TTS_SAMPLE_RATE = 44100
-MIN_RECORD_SEC = 1  # chống bấm nhầm
+from scipy.signal import resample_poly
 
 
 class AudioBackend:
     """
-    Audio backend cho thiết bị dịch
-
-    - Push-to-talk recording
-    - Resample về 16kHz cho STT
-    - Playback cho TTS
+    Audio backend SAFE for Raspberry Pi:
+    - No librosa
+    - No numba
+    - No crash if recording too short
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]) -> None:
         audio_cfg = config.get("AUDIO", {})
 
-        self.input_device = int(audio_cfg.get("INPUT_DEVICE", DEFAULT_INPUT_DEVICE))
-        self.output_device = int(audio_cfg.get("OUTPUT_DEVICE", DEFAULT_OUTPUT_DEVICE))
+        self.sample_rate = int(audio_cfg.get("SAMPLE_RATE", 16000))
         self.channels = int(audio_cfg.get("CHANNELS", 1))
+        self.max_seconds = int(audio_cfg.get("MAX_RECORD_SECONDS", 10))
 
+        self.input_device = audio_cfg.get("INPUT_DEVICE", None)
+        self.output_device = audio_cfg.get("OUTPUT_DEVICE", None)
+
+        self._recording = False
         self._frames: list[np.ndarray] = []
         self._stream: sd.InputStream | None = None
-        self._orig_sr: int | None = None
-
-        base = Path(config.get("ARTIFACTS_DIR", "artifacts"))
-        tmp = base / "tmp"
-        tmp.mkdir(parents=True, exist_ok=True)
-        self._wav_path = tmp / "ptt_record.wav"
 
         print(
-            "[AUDIO] Init | "
-            f"IN_DEV={self.input_device} | OUT_DEV={self.output_device} | "
-            f"STT_SR={STT_SAMPLE_RATE} | TTS_SR={TTS_SAMPLE_RATE}"
+            f"[AUDIO] Init | SR={self.sample_rate} | CH={self.channels} | "
+            f"IN_DEV={self.input_device} | OUT_DEV={self.output_device}"
         )
 
     # ================= RECORD =================
 
     def start_record(self) -> None:
-        self._frames = []
+        if self._recording:
+            return
+
+        self._frames.clear()
+        self._recording = True
 
         def callback(indata, frames, time_info, status):
-            if status:
-                print("[AUDIO][WARN]", status)
-            self._frames.append(indata.copy())
+            if self._recording:
+                self._frames.append(indata.copy())
 
         self._stream = sd.InputStream(
-            device=self.input_device,
+            samplerate=48000,  # native USB mic SR
             channels=self.channels,
-            dtype="float32",
+            dtype="int16",
             callback=callback,
+            device=self.input_device,
         )
 
-        self._orig_sr = int(self._stream.samplerate)
         self._stream.start()
+        print("[AUDIO] Recording started")
 
-        print(f"[AUDIO] Recording started (native_sr={self._orig_sr})")
+    def stop_record(self) -> str | None:
+        if not self._recording:
+            return None
 
-    def stop_record(self) -> Path:
-        if not self._stream:
-            raise RuntimeError("Audio stream not started")
+        self._recording = False
 
-        self._stream.stop()
-        self._stream.close()
-        self._stream = None
+        try:
+            if self._stream:
+                self._stream.stop()
+                self._stream.close()
+        except Exception:
+            pass
 
         if not self._frames:
-            raise RuntimeError("No audio captured")
+            print("[AUDIO] stop_record: no frames")
+            return None
 
         audio = np.concatenate(self._frames, axis=0)
 
-        if audio.ndim > 1:
-            audio = audio.mean(axis=1)
+        duration = len(audio) / 48000
+        if duration < 0.3:
+            print("[AUDIO] stop_record: too short")
+            return None
 
-        duration = len(audio) / float(self._orig_sr or 1)
-        if duration < MIN_RECORD_SEC:
-            raise RuntimeError("Recording too short")
+        # ---- resample 48k -> 16k (SAFE) ----
+        audio_16k = resample_poly(audio, up=1, down=3)
 
-        audio_16k = librosa.resample(
-            audio,
-            orig_sr=self._orig_sr,
-            target_sr=STT_SAMPLE_RATE,
-        )
+        # ---- write wav ----
+        fd, path = tempfile.mkstemp(suffix=".wav")
+        with wave.open(path, "wb") as wf:
+            wf.setnchannels(self.channels)
+            wf.setsampwidth(2)
+            wf.setframerate(self.sample_rate)
+            wf.writeframes(audio_16k.tobytes())
 
-        sf.write(self._wav_path, audio_16k, STT_SAMPLE_RATE)
-        print(f"[AUDIO] Saved STT wav @16kHz: {self._wav_path}")
+        print(f"[AUDIO] Saved: {path}")
+        return path
 
-        return self._wav_path
+    # ================= PLAY =================
 
-    # ================= PLAYBACK (TTS) =================
-
-    def play(self, audio: np.ndarray) -> None:
-        sd.play(
-            audio,
-            samplerate=TTS_SAMPLE_RATE,
-            device=self.output_device,
-        )
-        sd.wait()
-
-    # ================= PIPELINE COMPAT =================
-
-    def speak(self, audio: np.ndarray) -> None:
-        """
-        Alias để tương thích pipeline:
-        pipeline gọi self.audio.speak(...)
-        """
-        self.play(audio)
+    def play_wav(self, wav_path: str) -> None:
+        try:
+            with wave.open(wav_path, "rb") as wf:
+                data = wf.readframes(wf.getnframes())
+                audio = np.frombuffer(data, dtype=np.int16)
+                sd.play(audio, wf.getframerate(), device=self.output_device)
+                sd.wait()
+        except Exception as e:
+            print("[AUDIO] play failed:", e)
 
 
-# ================= FACTORY =================
-
-
-def create_audio(config: Dict[str, Any]):
-    print("[AUDIO] Using AudioBackend")
+def create_audio(config: dict[str, Any]) -> AudioBackend:
     return AudioBackend(config)
