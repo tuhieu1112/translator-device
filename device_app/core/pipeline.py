@@ -1,9 +1,26 @@
 from __future__ import annotations
 
 import time
+import re
 from typing import Any
 
 from device_app.core.modes import Mode
+
+
+def _strip_music_marks(text: str) -> str:
+    """
+    Xóa các ký tự nhạc (ví dụ: ♪ ♫ ♩ ♬ …) xuất hiện ở đầu/đuôi
+    của chuỗi do NMT/opus chèn vào, tránh gây nhiễu cho TTS.
+    Chỉ làm sạch đầu và cuối, KHÔNG sửa nội dung giữa chuỗi.
+    """
+    if not text:
+        return text
+    # tập các ký tự nhạc phổ biến: U+2669..U+266F plus common music symbols
+    music_chars = r"\u2669\u266A\u266B\u266C\u266D\u266E\u266F\u1F3B5\u1F3B6"
+    # xóa liên tiếp các ký tự nhạc + whitespace ở đầu và cuối
+    text = re.sub(rf"^[{music_chars}\s]+", "", text)
+    text = re.sub(rf"[{music_chars}\s]+$", "", text)
+    return text.strip()
 
 
 class TranslatorPipeline:
@@ -202,8 +219,6 @@ class TranslatorPipeline:
                 print("[SKELETON][VI] slots =", slots)
 
                 # ===== MAKE NMT-SAFE TOKENS =====
-                import re
-
                 safe_skel = skel
                 safe_slots = {}
 
@@ -227,6 +242,10 @@ class TranslatorPipeline:
                 text_out = self.skeleton.compose(translated, safe_slots)
                 print("[FINAL][EN]:", text_out)
 
+                # --- strip music marks only ---
+                text_out = _strip_music_marks(text_out)
+                print("[FINAL][EN][CLEAN]:", repr(text_out))
+
                 self.tts_en.speak(text_out)
 
             else:
@@ -236,6 +255,10 @@ class TranslatorPipeline:
 
                 translated = self.nmt_en_vi.translate(src_text)
                 print("[NMT][EN->VI] output:", translated)
+
+                # --- strip music marks only ---
+                translated = _strip_music_marks(translated)
+                print("[FINAL][VI][CLEAN]:", repr(translated))
 
                 self.tts_vi.speak(translated)
 
