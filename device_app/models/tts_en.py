@@ -1,5 +1,5 @@
 # tts_en.py
-from piper_tts import PiperTTS
+from device_app.models.piper_tts import PiperTTS
 
 
 def create_tts_en(config: dict):
