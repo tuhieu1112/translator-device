@@ -188,9 +188,9 @@ class TranslatorPipeline:
             self.display.show_status(mode=self.mode, state="TRANSLATING")
 
             text_in = (
-                self.stt_vi.transcribe(wav_path)
+                self.stt_vi.transcribe_file(wav_path)
                 if self.mode == Mode.VI_EN
-                else self.stt_en.transcribe(wav_path)
+                else self.stt_en.transcribe_file(wav_path)
             )
 
             nlp = self.nlp_vi if self.mode == Mode.VI_EN else self.nlp_en
